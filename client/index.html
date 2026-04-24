@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Invoice Processing & AP Automation</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Login Page -->
+    <div id="login-page" class="login-container">
+      <div class="login-card">
+        <div class="login-header">
+          <div class="login-logo">
+            <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+              <rect width="48" height="48" rx="12" fill="#6366f1"/>
+              <path d="M14 20h20M14 28h12M24 14l8 8-8 8" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <h1>AI Invoice Processing</h1>
+          <p>Accounts Payable Automation Platform</p>
+        </div>
+        <form id="login-form">
+          <div class="form-group">
+            <label for="login-email">Email</label>
+            <input type="email" id="login-email" placeholder="Enter your email" required>
+          </div>
+          <div class="form-group">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" placeholder="Enter your password" required>
+          </div>
+          <button type="submit" class="btn btn-primary btn-full">Sign In</button>
+          <button type="button" class="btn btn-secondary btn-full" id="demo-login-btn">
+            Quick Demo Login
+          </button>
+          <p class="login-hint">Demo: admin@company.com / admin123</p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-app" class="hidden">
+      <!-- Sidebar -->
+      <nav id="sidebar">
+        <div class="sidebar-header">
+          <svg width="32" height="32" viewBox="0 0 48 48" fill="none">
+            <rect width="48" height="48" rx="12" fill="#6366f1"/>
+            <path d="M14 20h20M14 28h12M24 14l8 8-8 8" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>AP Automation</span>
+        </div>
+        <ul class="nav-menu">
+          <li class="nav-item active" data-page="dashboard">
+            <span class="nav-icon">📊</span> Dashboard
+          </li>
+          <li class="nav-item" data-page="invoices">
+            <span class="nav-icon">📄</span> Invoices
+          </li>
+          <li class="nav-item" data-page="vendors">
+            <span class="nav-icon">🏢</span> Vendors
+          </li>
+          <li class="nav-item" data-page="purchase-orders">
+            <span class="nav-icon">📋</span> Purchase Orders
+          </li>
+          <li class="nav-item" data-page="payments">
+            <span class="nav-icon">💳</span> Payments
+          </li>
+          <li class="nav-item" data-page="approvals">
+            <span class="nav-icon">✅</span> Approvals
+          </li>
+          <li class="nav-item" data-page="expense-categories">
+            <span class="nav-icon">📁</span> Expense Categories
+          </li>
+          <li class="nav-item" data-page="budgets">
+            <span class="nav-icon">💰</span> Budgets
+          </li>
+          <li class="nav-item" data-page="receipts">
+            <span class="nav-icon">🧾</span> Receipts
+          </li>
+          <li class="nav-item" data-page="tax-records">
+            <span class="nav-icon">📑</span> Tax Records
+          </li>
+          <li class="nav-item" data-page="reports">
+            <span class="nav-icon">📈</span> Reports
+          </li>
+          <li class="nav-item" data-page="bank-reconciliations">
+            <span class="nav-icon">🏦</span> Bank Reconciliation
+          </li>
+          <li class="nav-item" data-page="credit-notes">
+            <span class="nav-icon">📝</span> Credit Notes
+          </li>
+          <li class="nav-item" data-page="currency-conversions">
+            <span class="nav-icon">💱</span> Currency Conversion
+          </li>
+          <li class="nav-item" data-page="duplicate-detections">
+            <span class="nav-icon">🔍</span> Duplicate Detection
+          </li>
+          <li class="nav-item" data-page="audit-logs">
+            <span class="nav-icon">📜</span> Audit Logs
+          </li>
+        </ul>
+        <div class="sidebar-footer">
+          <div class="user-info">
+            <div class="user-avatar" id="user-avatar">A</div>
+            <span id="user-name">Admin</span>
+          </div>
+          <button class="btn-logout" id="logout-btn">Logout</button>
+        </div>
+      </nav>
+
+      <!-- Main Content -->
+      <main id="content">
+        <div id="page-content"></div>
+      </main>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+      <div class="modal" id="modal">
+        <div class="modal-header">
+          <h2 id="modal-title">Modal</h2>
+          <button class="modal-close" id="modal-close">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+      </div>
+    </div>
+
+    <!-- AI Analysis Panel -->
+    <div id="ai-panel" class="ai-panel hidden">
+      <div class="ai-panel-header">
+        <h3>🤖 AI Analysis</h3>
+        <button class="ai-panel-close" id="ai-panel-close">&times;</button>
+      </div>
+      <div class="ai-panel-body" id="ai-panel-body">
+        <div class="ai-loading">Analyzing...</div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast-container"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
