@@ -3,8 +3,11 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 
 function callOpenRouter(prompt, systemPrompt = 'You are an expert AP automation and invoice processing AI assistant.') {
   return new Promise((resolve, reject) => {
+    if (!process.env.OPENROUTER_API_KEY) {
+      return resolve({ success: false, statusCode: 503, error: 'AI service unavailable: OPENROUTER_API_KEY not set' });
+    }
     const data = JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || 'anthropic/claude-haiku-4.5',
+      model: process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt }
@@ -45,6 +48,63 @@ function callOpenRouter(prompt, systemPrompt = 'You are an expert AP automation 
           }
         } catch (e) {
           resolve({ success: false, error: 'Failed to parse response', raw: body });
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      resolve({ success: false, error: e.message });
+    });
+
+    req.write(data);
+    req.end();
+  });
+}
+
+function callOpenRouterWithVision(imageDataUrl, systemPrompt) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({
+      model: process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+            { type: 'text', text: 'Extract all invoice data from this image and return as JSON.' }
+          ]
+        }
+      ],
+      max_tokens: 2000,
+      temperature: 0.1
+    });
+
+    const options = {
+      hostname: 'openrouter.ai',
+      path: '/api/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'HTTP-Referer': 'http://localhost:3001',
+        'X-Title': 'AI Invoice Processing'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          if (parsed.error) {
+            resolve({ success: false, error: parsed.error.message || 'API error' });
+          } else {
+            const content = parsed.choices?.[0]?.message?.content || 'No response';
+            resolve({ success: true, content, model: parsed.model, usage: parsed.usage });
+          }
+        } catch (e) {
+          resolve({ success: false, error: 'Failed to parse response' });
         }
       });
     });
@@ -385,4 +445,4 @@ Format your response with clear sections and bullet points.`;
   }
 };
 
-module.exports = { callOpenRouter, aiFeatures };
+module.exports = { callOpenRouter, callOpenRouterWithVision, aiFeatures };

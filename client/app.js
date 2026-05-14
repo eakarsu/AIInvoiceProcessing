@@ -3,6 +3,7 @@ const API = '';  // same origin
 let token = localStorage.getItem('token');
 let currentUser = JSON.parse(localStorage.getItem('user') || 'null');
 let currentPage = 'dashboard';
+const pageState = {}; // tracks { page, limit } per module
 
 // ====== API HELPER ======
 async function api(path, options = {}) {
@@ -16,7 +17,34 @@ async function api(path, options = {}) {
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (res.status === 429) {
+    const msg = data.error || 'Too many AI requests. Please wait before trying again.';
+    toast(msg, 'error');
+    const e = new Error(msg); e.status = 429; throw e;
+  }
+  if (res.status === 503) {
+    const msg = data.error || 'AI service unavailable - OPENROUTER_API_KEY is not set on the server.';
+    const e = new Error(msg); e.status = 503; throw e;
+  }
+  if (!res.ok) {
+    const e = new Error(data.error || 'Request failed'); e.status = res.status; throw e;
+  }
+  return data;
+}
+
+async function apiUpload(path, formData) {
+  const res = await fetch(`${API}/api${path}`, {
+    method: 'POST',
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: formData,
+  });
+  const data = await res.json();
+  if (res.status === 429) {
+    const msg = data.error || 'Rate limit exceeded.';
+    toast(msg, 'error');
+    throw new Error(msg);
+  }
+  if (!res.ok) throw new Error(data.error || 'Upload failed');
   return data;
 }
 
@@ -200,35 +228,127 @@ function navigateTo(page) {
 }
 
 // ====== PAGE RENDERER ======
-async function renderPage(page) {
+async function renderPage(page, pageNum = 1) {
   const content = document.getElementById('page-content');
   if (page === 'dashboard') return renderDashboard(content);
+  if (page === 'advanced-ai') return renderAdvancedAI(content);
 
   const config = pageConfigs[page];
   if (!config) { content.innerHTML = '<div class="empty-state"><p>Page not found</p></div>'; return; }
+
+  if (!pageState[page]) pageState[page] = { page: 1, limit: 20 };
+  pageState[page].page = pageNum;
+
+  const isInvoices = page === 'invoices';
 
   content.innerHTML = `
     <div class="page-header">
       <h1>${config.title}</h1>
       <div class="page-header-actions">
+        ${isInvoices ? '<button class="btn btn-secondary" id="ocr-upload-btn">Upload Invoice (OCR)</button>' : ''}
         <button class="btn btn-primary" id="add-new-btn">+ New ${config.singular}</button>
       </div>
     </div>
+    ${isInvoices ? '<div id="ocr-section" class="hidden" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin-bottom:16px;"></div>' : ''}
     <div class="table-container">
       <table class="data-table">
         <thead><tr>${config.columns.map(c => `<th>${c.label}</th>`).join('')}<th>Actions</th></tr></thead>
         <tbody id="table-body"><tr><td colspan="${config.columns.length + 1}" style="text-align:center;padding:40px;">Loading...</td></tr></tbody>
       </table>
-    </div>`;
+    </div>
+    <div id="pagination-controls" style="display:flex;align-items:center;justify-content:center;gap:16px;padding:16px 0;"></div>`;
 
   document.getElementById('add-new-btn').addEventListener('click', () => showCreateForm(config));
 
+  if (isInvoices) {
+    document.getElementById('ocr-upload-btn').addEventListener('click', () => {
+      const sec = document.getElementById('ocr-section');
+      sec.classList.toggle('hidden');
+      if (!sec.classList.contains('hidden')) renderOcrSection(sec, config);
+    });
+  }
+
   try {
-    const data = await api(`/${page}`);
-    renderTable(data, config);
+    const { page: pg, limit } = pageState[page];
+    const result = await api(`/${page}?page=${pg}&limit=${limit}`);
+    // Support both paginated response {data, pagination} and legacy array
+    const items = Array.isArray(result) ? result : result.data;
+    const pagination = Array.isArray(result) ? null : result.pagination;
+    renderTable(items, config, page);
+    if (pagination) renderPagination(pagination, page);
   } catch (err) {
     toast(err.message, 'error');
   }
+}
+
+function renderPagination(pagination, page) {
+  const container = document.getElementById('pagination-controls');
+  if (!container || !pagination) return;
+  const { page: currentPg, totalPages, total, limit } = pagination;
+  const start = (currentPg - 1) * limit + 1;
+  const end = Math.min(currentPg * limit, total);
+  container.innerHTML = `
+    <button class="btn btn-secondary btn-sm" ${currentPg <= 1 ? 'disabled' : ''} id="prev-page">Previous</button>
+    <span style="color:#64748b;font-size:14px;">Page ${currentPg} of ${totalPages} &nbsp;(${start}–${end} of ${total})</span>
+    <button class="btn btn-secondary btn-sm" ${currentPg >= totalPages ? 'disabled' : ''} id="next-page">Next</button>
+  `;
+  if (currentPg > 1) {
+    document.getElementById('prev-page').addEventListener('click', () => renderPage(page, currentPg - 1));
+  }
+  if (currentPg < totalPages) {
+    document.getElementById('next-page').addEventListener('click', () => renderPage(page, currentPg + 1));
+  }
+}
+
+function renderOcrSection(container, config) {
+  container.innerHTML = `
+    <h3 style="margin:0 0 12px;font-size:16px;">Upload Invoice for AI Extraction (OCR)</h3>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <input type="file" id="ocr-file-input" accept="image/jpeg,image/png" style="flex:1;min-width:200px;">
+      <button class="btn btn-ai" id="ocr-extract-btn">Extract with AI</button>
+    </div>
+    <div id="ocr-result" style="margin-top:16px;"></div>
+  `;
+
+  document.getElementById('ocr-extract-btn').addEventListener('click', async () => {
+    const fileInput = document.getElementById('ocr-file-input');
+    if (!fileInput.files.length) { toast('Please select a file first', 'error'); return; }
+    const resultDiv = document.getElementById('ocr-result');
+    resultDiv.innerHTML = '<div class="ai-loading">Extracting invoice data with AI...</div>';
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    try {
+      const data = await apiUpload('/invoices/ocr-upload', formData);
+      const ex = data.extracted || {};
+      resultDiv.innerHTML = `
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:16px;">
+          <h4 style="margin:0 0 12px;">Extracted Data ${data.invoice_id ? '<span style="color:#22c55e;font-size:13px;">(Invoice #' + data.invoice_id + ' saved)</span>' : ''}</h4>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+            <div><strong>Vendor:</strong> ${escapeHtml(ex.vendor_name || '-')}</div>
+            <div><strong>Invoice #:</strong> ${escapeHtml(ex.invoice_number || '-')}</div>
+            <div><strong>Invoice Date:</strong> ${escapeHtml(ex.invoice_date || '-')}</div>
+            <div><strong>Due Date:</strong> ${escapeHtml(ex.due_date || '-')}</div>
+            <div><strong>Subtotal:</strong> $${Number(ex.subtotal || 0).toFixed(2)}</div>
+            <div><strong>Tax:</strong> $${Number(ex.tax || 0).toFixed(2)}</div>
+            <div><strong>Total:</strong> <strong style="color:#2563eb;">$${Number(ex.total_amount || 0).toFixed(2)}</strong></div>
+            <div><strong>Payment Terms:</strong> ${escapeHtml(ex.payment_terms || '-')}</div>
+          </div>
+          ${ex.line_items && ex.line_items.length ? `
+            <div><strong>Line Items:</strong>
+              <table style="width:100%;margin-top:8px;font-size:13px;border-collapse:collapse;">
+                <thead><tr style="background:#f1f5f9;">${['Description','Qty','Unit Price','Total'].map(h => `<th style="padding:6px 8px;text-align:left;">${h}</th>`).join('')}</tr></thead>
+                <tbody>${ex.line_items.map(li => `<tr><td style="padding:4px 8px;">${escapeHtml(String(li.description || '-'))}</td><td style="padding:4px 8px;">${li.quantity || '-'}</td><td style="padding:4px 8px;">$${Number(li.unit_price || 0).toFixed(2)}</td><td style="padding:4px 8px;">$${Number(li.total || 0).toFixed(2)}</td></tr>`).join('')}</tbody>
+              </table>
+            </div>` : ''}
+          ${data.invoice_id ? `<p style="margin:12px 0 0;color:#22c55e;font-size:14px;">Invoice automatically saved with ID #${data.invoice_id}. Refreshing list...</p>` : '<p style="margin:12px 0 0;color:#f59e0b;font-size:14px;">Invoice could not be auto-saved (missing vendor name).</p>'}
+        </div>`;
+      if (data.invoice_id) setTimeout(() => renderPage(currentPage), 1500);
+    } catch (err) {
+      resultDiv.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;
+    }
+  });
 }
 
 // ====== PAGE CONFIGS ======
@@ -582,7 +702,7 @@ const pageConfigs = {
 };
 
 // ====== TABLE RENDERER ======
-function renderTable(data, config) {
+function renderTable(data, config, pageName) {
   const tbody = document.getElementById('table-body');
   if (!data.length) {
     tbody.innerHTML = `<tr><td colspan="${config.columns.length + 1}"><div class="empty-state"><div class="empty-icon">📭</div><p>No ${config.title.toLowerCase()} found</p></div></td></tr>`;
@@ -593,7 +713,7 @@ function renderTable(data, config) {
     <tr data-id="${row.id}">
       ${config.columns.map(col => `<td>${formatCell(row[col.key], col.format)}</td>`).join('')}
       <td>
-        <button class="btn btn-ai btn-sm ai-btn" data-id="${row.id}" title="AI Analysis">🤖 AI</button>
+        <button class="btn btn-ai btn-sm ai-btn" data-id="${row.id}" title="AI Analysis">AI</button>
       </td>
     </tr>
   `).join('');
@@ -604,7 +724,7 @@ function renderTable(data, config) {
       if (e.target.closest('.ai-btn')) return;
       const id = tr.dataset.id;
       const item = data.find(d => d.id == id);
-      if (item) showDetail(item, config);
+      if (item) showDetail(item, config, pageName);
     });
   });
 
@@ -650,8 +770,10 @@ function formatDetailValue(key, value) {
 }
 
 // ====== DETAIL VIEW ======
-function showDetail(item, config) {
+function showDetail(item, config, pageName) {
   const fields = config.detailFields || Object.keys(item).filter(k => k !== 'id');
+  const isInvoice = (pageName || currentPage) === 'invoices';
+
   const bodyHtml = `
     <div class="detail-grid">
       ${fields.map(key => `
@@ -661,10 +783,12 @@ function showDetail(item, config) {
         </div>
       `).join('')}
     </div>
+    ${isInvoice ? '<div id="three-way-match-result" style="margin-top:16px;"></div>' : ''}
   `;
 
   const footerHtml = `
-    <button class="btn btn-ai" id="detail-ai-btn">🤖 AI Analyze</button>
+    ${isInvoice ? '<button class="btn btn-secondary" id="detail-3way-btn">3-Way Match</button>' : ''}
+    <button class="btn btn-ai" id="detail-ai-btn">AI Analyze</button>
     <button class="btn btn-warning" id="detail-edit-btn">Edit</button>
     <button class="btn btn-danger" id="detail-delete-btn">Delete</button>
     <button class="btn btn-secondary" id="detail-close-btn">Close</button>
@@ -683,6 +807,36 @@ function showDetail(item, config) {
       renderAiResponse({ success: false, error: err.message });
     }
   });
+
+  if (isInvoice) {
+    document.getElementById('detail-3way-btn').addEventListener('click', async () => {
+      const resultDiv = document.getElementById('three-way-match-result');
+      resultDiv.innerHTML = '<div class="ai-loading">Running 3-way match analysis...</div>';
+      try {
+        const res = await api(`/invoices/${item.id}/three-way-match`, { method: 'POST' });
+        const match = res.match_result || {};
+        const status = match.match_status || 'unknown';
+        const statusColors = { approved: '#22c55e', discrepancy: '#ef4444', missing_docs: '#f59e0b' };
+        const color = statusColors[status] || '#64748b';
+        resultDiv.innerHTML = `
+          <div style="border:1px solid ${color};border-radius:8px;padding:16px;background:#fff;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+              <span style="background:${color};color:#fff;padding:4px 12px;border-radius:20px;font-weight:600;font-size:14px;">${status.replace(/_/g,' ').toUpperCase()}</span>
+              <span style="color:#64748b;font-size:13px;">PO: ${res.po_found ? 'Found' : 'Not Found'} | Receipt: ${res.receipt_found ? 'Found' : 'Not Found'}</span>
+            </div>
+            ${match.discrepancies && match.discrepancies.length ? `
+              <div style="margin-bottom:8px;"><strong>Discrepancies:</strong>
+                <ul style="margin:4px 0 0;padding-left:20px;">${match.discrepancies.map(d => `<li style="font-size:13px;">${escapeHtml(String(d))}</li>`).join('')}</ul>
+              </div>` : ''}
+            ${match.recommended_action ? `<div style="margin-bottom:8px;font-size:14px;"><strong>Action:</strong> ${escapeHtml(match.recommended_action)}</div>` : ''}
+            ${match.approval_confidence !== undefined ? `<div style="font-size:13px;color:#64748b;">Confidence: ${Math.round(match.approval_confidence * 100)}%</div>` : ''}
+            ${match.summary ? `<div style="margin-top:8px;font-size:13px;color:#475569;">${escapeHtml(match.summary)}</div>` : ''}
+          </div>`;
+      } catch (err) {
+        resultDiv.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;
+      }
+    });
+  }
 
   document.getElementById('detail-edit-btn').addEventListener('click', () => {
     closeModal();
@@ -858,6 +1012,161 @@ async function renderDashboard(content) {
   document.querySelectorAll('.feature-card').forEach(card => {
     card.addEventListener('click', () => navigateTo(card.dataset.page));
   });
+}
+
+// ====== ADVANCED AI ======
+async function renderAdvancedAI(content) {
+  content.innerHTML = `
+    <div class="page-header">
+      <h1>🤖 Advanced AI Tools</h1>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+      <button class="btn btn-secondary" data-tab="duplicate">Duplicate Detection</button>
+      <button class="btn btn-secondary" data-tab="payment">Payment Term Advisor</button>
+      <button class="btn btn-secondary" data-tab="budget">Budget Forecast</button>
+      <button class="btn btn-secondary" data-tab="scorecard">Supplier Scorecard</button>
+    </div>
+    <div id="advanced-ai-tab" style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;"></div>
+    <div id="advanced-ai-result" style="margin-top:16px;"></div>
+  `;
+  const tabContainer = content.querySelector('#advanced-ai-tab');
+
+  const renderDuplicate = async () => {
+    let invoices = [];
+    try {
+      const res = await api(`/invoices?page=1&limit=200`);
+      invoices = Array.isArray(res) ? res : (res.data || []);
+    } catch {/* ignore */}
+    tabContainer.innerHTML = `
+      <h3 style="margin:0 0 12px;">🔍 Duplicate Invoice Detection</h3>
+      <p style="color:#64748b;margin-bottom:12px;">Detect duplicate / near-duplicate invoices for the selected invoice using vendor + amount tolerance + invoice number.</p>
+      <div class="form-group">
+        <label>Invoice</label>
+        <select id="adv-invoice-id">
+          <option value="">-- Select Invoice --</option>
+          ${invoices.map(inv => `<option value="${inv.id}">#${inv.id} ${inv.invoice_number || ''} ${inv.vendor_name ? '— ' + inv.vendor_name : ''} ${inv.total_amount ? '($' + Number(inv.total_amount).toLocaleString() + ')' : ''}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn btn-primary" id="adv-duplicate-run">Run Duplicate Detection</button>
+    `;
+    document.getElementById('adv-duplicate-run').addEventListener('click', async () => {
+      const id = document.getElementById('adv-invoice-id').value;
+      if (!id) { toast('Please select an invoice', 'error'); return; }
+      await runAdvanced(`/invoices/${id}/duplicate-detection`, {});
+    });
+  };
+
+  const renderPayment = async () => {
+    let vendors = [];
+    try {
+      const res = await api(`/vendors?page=1&limit=200`);
+      vendors = Array.isArray(res) ? res : (res.data || []);
+    } catch {/* ignore */}
+    tabContainer.innerHTML = `
+      <h3 style="margin:0 0 12px;">💼 Payment Term Advisor</h3>
+      <p style="color:#64748b;margin-bottom:12px;">Recommended terms days, early-pay discount target, expected annual savings, and negotiation script.</p>
+      <div class="form-group">
+        <label>Vendor</label>
+        <select id="adv-vendor-id">
+          <option value="">-- Select Vendor --</option>
+          ${vendors.map(v => `<option value="${v.id}">#${v.id} ${v.name || ''} ${v.payment_terms ? '(' + v.payment_terms + ')' : ''}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn btn-primary" id="adv-payment-run">Run Advisor</button>
+    `;
+    document.getElementById('adv-payment-run').addEventListener('click', async () => {
+      const id = document.getElementById('adv-vendor-id').value;
+      if (!id) { toast('Please select a vendor', 'error'); return; }
+      await runAdvanced(`/vendors/${id}/payment-term-advisor`, {});
+    });
+  };
+
+  const renderBudget = () => {
+    tabContainer.innerHTML = `
+      <h3 style="margin:0 0 12px;">📊 Budget Forecast</h3>
+      <p style="color:#64748b;margin-bottom:12px;">Low/central/high projections by category with confidence and recommended actions.</p>
+      <div class="form-group">
+        <label>Forecast Horizon (months)</label>
+        <input type="number" id="adv-horizon-months" value="12" min="1" max="36">
+      </div>
+      <div class="form-group">
+        <label>Notes / Context</label>
+        <textarea id="adv-budget-notes" rows="3" placeholder="Optional: business changes, hiring, seasonality"></textarea>
+      </div>
+      <button class="btn btn-primary" id="adv-budget-run">Run Forecast</button>
+    `;
+    document.getElementById('adv-budget-run').addEventListener('click', async () => {
+      const horizon = Number(document.getElementById('adv-horizon-months').value || 12);
+      const notes = document.getElementById('adv-budget-notes').value;
+      const body = { horizon_months: horizon };
+      if (notes) body.notes = notes;
+      await runAdvanced('/budgets/forecast', body);
+    });
+  };
+
+  const renderScorecard = async () => {
+    let vendors = [];
+    try {
+      const res = await api(`/vendors?page=1&limit=200`);
+      vendors = Array.isArray(res) ? res : (res.data || []);
+    } catch {/* ignore */}
+    tabContainer.innerHTML = `
+      <h3 style="margin:0 0 12px;">📋 Supplier Scorecard</h3>
+      <p style="color:#64748b;margin-bottom:12px;">Composite vendor score across delivery, billing, payment compliance, dispute rate, and risk.</p>
+      <div class="form-group">
+        <label>Vendor</label>
+        <select id="adv-scorecard-vendor-id">
+          <option value="">-- Select Vendor --</option>
+          ${vendors.map(v => `<option value="${v.id}">#${v.id} ${v.name || ''}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn btn-primary" id="adv-scorecard-run">Run Scorecard</button>
+    `;
+    document.getElementById('adv-scorecard-run').addEventListener('click', async () => {
+      const id = document.getElementById('adv-scorecard-vendor-id').value;
+      if (!id) { toast('Please select a vendor', 'error'); return; }
+      await runAdvanced(`/vendors/${id}/scorecard`, {});
+    });
+  };
+
+  const runAdvanced = async (path, body) => {
+    const result = document.getElementById('advanced-ai-result');
+    result.innerHTML = '<div class="empty-state"><p>AI is analyzing...</p></div>';
+    try {
+      const data = await api(path, { method: 'POST', body });
+      result.innerHTML = `
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;">
+          <h3 style="margin:0 0 12px;">Result</h3>
+          <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;overflow:auto;font-size:12px;max-height:520px;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+        </div>
+      `;
+    } catch (err) {
+      const status = err.status || (err.response && err.response.status);
+      const msg = (status === 503)
+        ? 'AI service unavailable - OPENROUTER_API_KEY is not set on the server.'
+        : (err.message || 'Request failed');
+      result.innerHTML = `<div style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;padding:12px;border-radius:8px;">${escapeHtml(msg)}</div>`;
+    }
+  };
+
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  content.querySelectorAll('[data-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      content.querySelectorAll('[data-tab]').forEach((b) => b.classList.remove('btn-primary'));
+      content.querySelectorAll('[data-tab]').forEach((b) => b.classList.add('btn-secondary'));
+      btn.classList.remove('btn-secondary');
+      btn.classList.add('btn-primary');
+      const tab = btn.dataset.tab;
+      document.getElementById('advanced-ai-result').innerHTML = '';
+      if (tab === 'duplicate') renderDuplicate();
+      else if (tab === 'payment') renderPayment();
+      else if (tab === 'budget') renderBudget();
+      else if (tab === 'scorecard') renderScorecard();
+    });
+  });
+  // Default to first tab
+  content.querySelector('[data-tab="duplicate"]').click();
 }
 
 // ====== INIT ======
