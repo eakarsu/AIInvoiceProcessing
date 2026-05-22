@@ -232,6 +232,7 @@ async function renderPage(page, pageNum = 1) {
   const content = document.getElementById('page-content');
   if (page === 'dashboard') return renderDashboard(content);
   if (page === 'advanced-ai') return renderAdvancedAI(content);
+  if (page === 'approval-bottleneck') return renderApprovalBottleneck(content);
 
   const config = pageConfigs[page];
   if (!config) { content.innerHTML = '<div class="empty-state"><p>Page not found</p></div>'; return; }
@@ -278,6 +279,38 @@ async function renderPage(page, pageNum = 1) {
     if (pagination) renderPagination(pagination, page);
   } catch (err) {
     toast(err.message, 'error');
+  }
+}
+
+async function renderApprovalBottleneck(content) {
+  content.innerHTML = '<div class="ai-loading">Loading approval bottleneck analysis...</div>';
+  try {
+    const data = await api('/approval-bottleneck');
+    content.innerHTML = `
+      <div class="page-header">
+        <h1>Approval Bottleneck</h1>
+        <div class="page-header-actions">
+          <button class="btn btn-secondary" id="refresh-approval-bottleneck">Refresh</button>
+        </div>
+      </div>
+      <div class="dashboard-stats">
+        <div class="stat-card"><div class="stat-value">${data.summary.blockedInvoices}</div><div class="stat-label">Blocked Invoices</div></div>
+        <div class="stat-card"><div class="stat-value">$${Number(data.summary.cashAtRisk).toLocaleString()}</div><div class="stat-label">Cash at Risk</div></div>
+        <div class="stat-card"><div class="stat-value">${data.summary.medianDelayDays}</div><div class="stat-label">Median Delay Days</div></div>
+        <div class="stat-card"><div class="stat-value">${data.summary.urgentApprovers}</div><div class="stat-label">Urgent Approvers</div></div>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead><tr><th>Owner</th><th>Invoices</th><th>Amount</th><th>Delay Days</th></tr></thead>
+          <tbody>${data.queues.map(q => `<tr><td>${escapeHtml(q.owner)}</td><td>${q.invoices}</td><td>$${Number(q.amount).toLocaleString()}</td><td>${q.delayDays}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <div class="ai-content" style="margin-top:16px;">
+        ${data.recommendations.map(item => `<div class="ai-section"><div class="ai-section-content">${escapeHtml(item)}</div></div>`).join('')}
+      </div>`;
+    document.getElementById('refresh-approval-bottleneck').addEventListener('click', () => renderApprovalBottleneck(content));
+  } catch (err) {
+    content.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;
   }
 }
 

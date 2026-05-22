@@ -699,6 +699,7 @@ app.use('/api/payment-run-scheduler', require('./routes/payment-run-scheduler'))
 app.use('/api/vendor-benchmarking', require('./routes/vendor-benchmarking'));
 app.use('/api/three-way-resolver', require('./routes/three-way-resolver'));
 app.use('/api/erp-webhook', require('./routes/erp-webhook'));
+app.use('/api/approval-bottleneck', require('./routes/approval-bottleneck'));
 
 // === Batch 05 Gaps & Frontend Mounts ===
 try { const _gap_cash_flow_forecast = require('./routes/gap-cash-flow-forecast'); app.use('/api/gap-cash-flow-forecast', _gap_cash_flow_forecast); } catch(e) { console.error('gap mount fail cash-flow-forecast:', e.message); }
