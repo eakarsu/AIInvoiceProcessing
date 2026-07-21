@@ -3,10 +3,15 @@
   "version": "1.0.0",
   "description": "AI Invoice Processing & AP Automation Agent",
   "scripts": {
+    "server": "node server/index.js",
     "backend": "node --watch server/index.js",
     "frontend": "cd client && npx vite --port $FRONTEND_PORT",
     "seed": "node server/seed.js",
-    "start": "bash start.sh"
+    "start": "bash start.sh",
+    "bootstrap": "bash scripts/bootstrap.sh",
+    "migrate": "bash scripts/migrate.sh",
+    "seed:development": "bash scripts/seed-development.sh",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

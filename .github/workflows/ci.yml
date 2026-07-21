@@ -1,0 +1,21 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  governed-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test test/*.test.js
+      - run: node --check server/domain/invoicePolicy.js
+      - run: node --check server/routes/governedInvoiceWorkflow.js
+      - run: node --check server/services/providerBoundary.js
+      - run: node --check server/index.js
+      - run: bash -n start.sh scripts/bootstrap.sh scripts/migrate.sh scripts/seed-development.sh

@@ -1,79 +1,24 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -Eeuo pipefail
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_PORT="${BACKEND_PORT:-4001}"
+JWT_SECRET_VALUE="${JWT_SECRET:-}"
 
-echo "=========================================="
-echo "  AI Invoice Processing & AP Automation"
-echo "=========================================="
-echo ""
-
-# Load env
-if [ -f .env ]; then
-  export $(grep -v '^#' .env | xargs)
+if [[ ! -d "$PROJECT_DIR/node_modules" ]]; then
+  echo "Dependencies are absent. Run ./scripts/bootstrap.sh explicitly." >&2
+  exit 1
 fi
-
-BACKEND_PORT=${BACKEND_PORT:-4001}
-FRONTEND_PORT=${FRONTEND_PORT:-3001}
-
-# Kill any processes using our ports
-echo "🧹 Cleaning up used ports..."
-for PORT in $BACKEND_PORT $FRONTEND_PORT; do
-  PID=$(lsof -ti:$PORT 2>/dev/null || true)
-  if [ -n "$PID" ]; then
-    echo "   Killing process on port $PORT (PID: $PID)"
-    kill -9 $PID 2>/dev/null || true
-    sleep 1
-  fi
-done
-
-echo "✅ Ports cleared"
-echo ""
-
-# Install dependencies
-echo "📦 Installing dependencies..."
-npm install --silent 2>&1 | tail -1
-echo "✅ Dependencies installed"
-echo ""
-
-# Create database if not exists
-echo "🗄️  Setting up database..."
-psql -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME:-ai_invoice_processing}'" | grep -q 1 || \
-  psql -d postgres -c "CREATE DATABASE ${DB_NAME:-ai_invoice_processing}"
-echo "✅ Database ready"
-echo ""
-
-# Seed data
-echo "🌱 Seeding database with sample data..."
-node server/seed.js
-echo ""
-
-# Start backend with file watching (auto-reload on changes)
-echo "🚀 Starting backend server on port $BACKEND_PORT (with auto-reload)..."
-node --watch server/index.js &
-BACKEND_PID=$!
-echo "   Backend PID: $BACKEND_PID"
-echo ""
-
-# Wait for backend to start
-sleep 2
-
-echo "=========================================="
-echo "  🎉 Application is running!"
-echo ""
-echo "  🌐 App:     http://localhost:$BACKEND_PORT"
-echo ""
-echo "  📧 Demo Login:"
-echo "     Email:    admin@company.com"
-echo "     Password: admin123"
-echo ""
-echo "  🔄 Auto-reload is enabled"
-echo "     Edit server files and changes"
-echo "     will be picked up automatically."
-echo ""
-echo "  Press Ctrl+C to stop"
-echo "=========================================="
-
-# Handle shutdown
-trap "echo ''; echo '🛑 Shutting down...'; kill $BACKEND_PID 2>/dev/null; echo '✅ Stopped'; exit 0" SIGINT SIGTERM
-
-# Keep script running
-wait $BACKEND_PID
+if [[ -z "${DATABASE_URL:-}" && ( -z "${DB_HOST:-}" || -z "${DB_NAME:-}" || -z "${DB_USER:-}" || -z "${DB_PASSWORD:-}" ) ]]; then
+  echo "Set DATABASE_URL or DB_HOST/DB_NAME/DB_USER/DB_PASSWORD." >&2
+  exit 1
+fi
+if [[ "${#JWT_SECRET_VALUE}" -lt 32 ]]; then
+  echo "JWT_SECRET must contain at least 32 characters." >&2
+  exit 1
+fi
+if lsof -nP -iTCP:"$BACKEND_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Port $BACKEND_PORT is occupied; no process was terminated." >&2
+  exit 1
+fi
+cd "$PROJECT_DIR"
+exec npm run server

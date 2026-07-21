@@ -3,6 +3,16 @@ const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
 
+if (process.env.NODE_ENV === 'production' ||
+    (process.env.ALLOW_DEMO_SEED !== 'true' && process.env.ALLOW_DEVELOPMENT_SEED !== 'yes')) {
+  throw new Error('Demo seed is disabled; enable it explicitly outside production');
+}
+const demoPassword = process.env.DEMO_SEED_PASSWORD || process.env.DEMO_PASSWORD;
+if (!demoPassword || demoPassword.length < 12) {
+  throw new Error('DEMO_SEED_PASSWORD or DEMO_PASSWORD must contain at least 12 characters');
+}
+const demoEmail = process.env.DEMO_EMAIL || 'admin@company.com';
+
 async function seed() {
   const client = await pool.connect();
   try {
@@ -12,12 +22,12 @@ async function seed() {
     console.log('Schema created successfully');
 
     // Seed Users
-    const hashedPassword = await bcrypt.hash('admin123', 10);
+    const hashedPassword = await bcrypt.hash(demoPassword, 10);
     await client.query(`INSERT INTO users (email, password, full_name, role) VALUES
-      ('admin@company.com', $1, 'Admin User', 'admin'),
+      ($2, $1, 'Admin User', 'admin'),
       ('john@company.com', $1, 'John Smith', 'manager'),
       ('jane@company.com', $1, 'Jane Doe', 'user')
-    `, [hashedPassword]);
+    `, [hashedPassword, demoEmail]);
     console.log('Users seeded');
 
     // Seed Vendors (15+)

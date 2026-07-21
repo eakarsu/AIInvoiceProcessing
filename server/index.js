@@ -7,8 +7,8 @@ const multer = require('multer');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 // Startup validation
-if (!process.env.JWT_SECRET) {
-  console.error('FATAL: JWT_SECRET not set');
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error('FATAL: JWT_SECRET must contain at least 32 characters');
   process.exit(1);
 }
 
@@ -18,7 +18,8 @@ const { aiFeatures, callOpenRouterWithVision, callOpenRouter } = require('./ai')
 const app = express();
 const PORT = process.env.BACKEND_PORT || 4001;
 
-app.use(cors());
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).filter(Boolean);
+app.use(cors({ origin: (origin, callback) => (!origin || allowedOrigins.includes(origin) ? callback(null, true) : callback(new Error('origin not allowed'))) }));
 app.use(express.json({ limit: '10mb' }));
 
 // Serve static frontend files
@@ -56,10 +57,11 @@ function aiRateLimiter(req, res, next) {
 
 // Auth middleware
 function authMiddleware(req, res, next) {
-  const token = req.headers.authorization?.split(' ')[1];
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'No token provided' });
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = jwt.verify(token, process.env.JWT_SECRET, { issuer: 'invoice-processing' });
     next();
   } catch {
     res.status(401).json({ error: 'Invalid token' });
@@ -106,13 +108,36 @@ const upload = multer({
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const result = await pool.query(
+      `SELECT u.*,m.tenant_id,m.role AS membership_role FROM users u
+       LEFT JOIN tenant_memberships m ON m.user_id=u.id AND m.active=TRUE
+       WHERE LOWER(u.email)=LOWER($1) LIMIT 1`, [email]
+    );
     if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
     const user = result.rows[0];
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role, name: user.full_name }, process.env.JWT_SECRET, { expiresIn: '24h' });
-    res.json({ token, user: { id: user.id, email: user.email, name: user.full_name, role: user.role } });
+    const role = user.membership_role || user.role;
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role, tenantId: user.tenant_id || null, name: user.full_name },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_TTL || '1h', issuer: 'invoice-processing' }
+    );
+    res.json({ token, user: { id: user.id, email: user.email, name: user.full_name, role, tenantId: user.tenant_id || null } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, email, full_name, role FROM users WHERE id=$1 LIMIT 1',
+      [req.user.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const user = result.rows[0];
+    res.json({ id: user.id, email: user.email, name: user.full_name, role: req.user.role || user.role, tenantId: req.user.tenantId || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -121,6 +146,14 @@ app.post('/api/auth/login', async (req, res) => {
 // ====== GENERIC CRUD FACTORY ======
 function createCRUD(tableName, aiAnalyzer) {
   const router = express.Router();
+  router.use(authMiddleware);
+  const governedReadOnly = new Set(['invoices', 'vendors', 'purchase_orders', 'payments', 'approval_workflows', 'audit_logs']);
+  const writeRoles = new Set(['ap_analyst', 'admin']);
+  const writeGuard = (req, res, next) => {
+    if (governedReadOnly.has(tableName)) return res.status(403).json({ error: `${tableName} writes require the governed workflow or authoritative adapter` });
+    if (!writeRoles.has(req.user?.role)) return res.status(403).json({ error: 'AP analyst role is required' });
+    next();
+  };
 
   // GET all - with pagination
   router.get('/', async (req, res) => {
@@ -163,7 +196,7 @@ function createCRUD(tableName, aiAnalyzer) {
   });
 
   // POST create - with column whitelisting
-  router.post('/', async (req, res) => {
+  router.post('/', writeGuard, async (req, res) => {
     try {
       const filtered = filterBody(tableName, req.body);
       const keys = Object.keys(filtered);
@@ -181,7 +214,7 @@ function createCRUD(tableName, aiAnalyzer) {
   });
 
   // PUT update - with column whitelisting
-  router.put('/:id', async (req, res) => {
+  router.put('/:id', writeGuard, async (req, res) => {
     try {
       const filtered = filterBody(tableName, req.body);
       const keys = Object.keys(filtered);
@@ -201,7 +234,7 @@ function createCRUD(tableName, aiAnalyzer) {
   });
 
   // DELETE
-  router.delete('/:id', async (req, res) => {
+  router.delete('/:id', writeGuard, async (req, res) => {
     try {
       const result = await pool.query(`DELETE FROM ${tableName} WHERE id = $1 RETURNING *`, [req.params.id]);
       if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
@@ -288,32 +321,7 @@ app.post('/api/invoices/ocr-upload', authMiddleware, upload.single('file'), asyn
       extracted = { raw: result.content };
     }
 
-    // Auto-create invoice in DB
-    let invoice_id = null;
-    if (extracted && extracted.vendor_name) {
-      try {
-        const inv = await pool.query(
-          `INSERT INTO invoices (invoice_number, vendor_name, amount, due_date, issue_date, description, line_items, ai_extracted_data, ai_confidence_score, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending') RETURNING id`,
-          [
-            extracted.invoice_number || 'OCR-' + Date.now(),
-            extracted.vendor_name,
-            extracted.total_amount || 0,
-            extracted.due_date || null,
-            extracted.invoice_date || null,
-            'Auto-created via OCR upload',
-            JSON.stringify(extracted.line_items || []),
-            JSON.stringify(extracted),
-            85
-          ]
-        );
-        invoice_id = inv.rows[0].id;
-      } catch (dbErr) {
-        console.error('Failed to save invoice:', dbErr.message);
-      }
-    }
-
-    res.json({ extracted, invoice_id });
+    res.json({ extracted_candidate: extracted, authoritative: false, persisted: false, next_step: 'submit candidate to the governed extraction endpoint for deterministic validation' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -684,6 +692,9 @@ Return JSON:
   }
 });
 
+// Governed AP workflow is mounted before the frontend catch-all.
+app.use('/api/governed-invoices', require('./routes/governedInvoiceWorkflow')(authMiddleware));
+
 // Catch-all: serve frontend
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'client', 'index.html'));
@@ -692,25 +703,3 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
-
-// === BATCH 05 AUTO-MOUNT (custom feature suggestions) ===
-app.use('/api/email-ingest', require('./routes/email-ingest-agent'));
-app.use('/api/payment-run-scheduler', require('./routes/payment-run-scheduler'));
-app.use('/api/vendor-benchmarking', require('./routes/vendor-benchmarking'));
-app.use('/api/three-way-resolver', require('./routes/three-way-resolver'));
-app.use('/api/erp-webhook', require('./routes/erp-webhook'));
-app.use('/api/approval-bottleneck', require('./routes/approval-bottleneck'));
-
-// === Batch 05 Gaps & Frontend Mounts ===
-try { const _gap_cash_flow_forecast = require('./routes/gap-cash-flow-forecast'); app.use('/api/gap-cash-flow-forecast', _gap_cash_flow_forecast); } catch(e) { console.error('gap mount fail cash-flow-forecast:', e.message); }
-try { const _gap_early_pay_discount_optimizer = require('./routes/gap-early-pay-discount-optimizer'); app.use('/api/gap-early-pay-discount-optimizer', _gap_early_pay_discount_optimizer); } catch(e) { console.error('gap mount fail early-pay-discount-optimizer:', e.message); }
-try { const _gap_expense_category_classifier = require('./routes/gap-expense-category-classifier'); app.use('/api/gap-expense-category-classifier', _gap_expense_category_classifier); } catch(e) { console.error('gap mount fail expense-category-classifier:', e.message); }
-try { const _gap_vendor_risk_monitor = require('./routes/gap-vendor-risk-monitor'); app.use('/api/gap-vendor-risk-monitor', _gap_vendor_risk_monitor); } catch(e) { console.error('gap mount fail vendor-risk-monitor:', e.message); }
-try { const _gap_webhooks = require('./routes/gap-webhooks'); app.use('/api/gap-webhooks', _gap_webhooks); } catch(e) { console.error('gap mount fail webhooks:', e.message); }
-try { const _gap_multi_entity = require('./routes/gap-multi-entity'); app.use('/api/gap-multi-entity', _gap_multi_entity); } catch(e) { console.error('gap mount fail multi-entity:', e.message); }
-try { const _gap_role_based = require('./routes/gap-role-based'); app.use('/api/gap-role-based', _gap_role_based); } catch(e) { console.error('gap mount fail role-based:', e.message); }
-try { const _gap_notification_alerting = require('./routes/gap-notification-alerting'); app.use('/api/gap-notification-alerting', _gap_notification_alerting); } catch(e) { console.error('gap mount fail notification-alerting:', e.message); }
-try { const _gap_e_signature = require('./routes/gap-e-signature'); app.use('/api/gap-e-signature', _gap_e_signature); } catch(e) { console.error('gap mount fail e-signature:', e.message); }
-try { const _gap_customer_facing = require('./routes/gap-customer-facing'); app.use('/api/gap-customer-facing', _gap_customer_facing); } catch(e) { console.error('gap mount fail customer-facing:', e.message); }
-try { const _gap_substantive = require('./routes/gap-substantive'); app.use('/api/gap-substantive', _gap_substantive); } catch(e) { console.error('gap mount fail substantive:', e.message); }
-// === End Batch 05 Mounts ===
