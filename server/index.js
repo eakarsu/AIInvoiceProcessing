@@ -17,6 +17,9 @@ const { aiFeatures, callOpenRouterWithVision, callOpenRouter } = require('./ai')
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 4001;
+const jwtTtl = /^\d+(?:ms|s|m|h|d|w|y)?$/.test(process.env.JWT_TTL || '')
+  ? process.env.JWT_TTL
+  : '1h';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).filter(Boolean);
 app.use(cors({ origin: (origin, callback) => (!origin || allowedOrigins.includes(origin) ? callback(null, true) : callback(new Error('origin not allowed'))) }));
@@ -121,7 +124,7 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign(
       { id: user.id, email: user.email, role, tenantId: user.tenant_id || null, name: user.full_name },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_TTL || '1h', issuer: 'invoice-processing' }
+      { expiresIn: jwtTtl, issuer: 'invoice-processing' }
     );
     res.json({ token, user: { id: user.id, email: user.email, name: user.full_name, role, tenantId: user.tenant_id || null } });
   } catch (err) {
