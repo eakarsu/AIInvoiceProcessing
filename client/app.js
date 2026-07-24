@@ -192,8 +192,13 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('demo-login-btn').addEventListener('click', () => {
-  document.getElementById('login-email').value = 'admin@company.com';
-  document.getElementById('login-password').value = 'admin123';
+  const credentials = window.DEMO_CREDENTIALS;
+  if (!credentials) {
+    toast('Demo credentials are unavailable.', 'error');
+    return;
+  }
+  document.getElementById('login-email').value = credentials.email;
+  document.getElementById('login-password').value = credentials.password;
 });
 
 document.getElementById('logout-btn').addEventListener('click', () => {
