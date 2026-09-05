@@ -28,7 +28,7 @@ function digest(value) {
 
 function money(value, name, errors) {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) errors.push(`${name} must be a non-negative number`);
+  if (!['number','string'].includes(typeof value) || String(value).trim() === '' || !Number.isFinite(parsed) || parsed < 0) errors.push(`${name} must be a non-negative number`);
   return parsed;
 }
 
@@ -38,6 +38,9 @@ function roundMoney(value) {
 
 function validateExtraction(candidate, tolerance = 0.01) {
   const errors = [];
+  if (!Number.isFinite(tolerance) || tolerance < 0) errors.push('valid tolerance required');
+  const day = String(candidate?.invoiceDate || '');
+  if (!Number.isFinite(Date.parse(day)) || new Date(day).toISOString().slice(0,10) !== day) errors.push('invoiceDate must be a real calendar date');
   if (!String(candidate?.vendorId || '').trim()) errors.push('vendorId is required');
   if (!String(candidate?.invoiceNumber || '').trim()) errors.push('invoiceNumber is required');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(candidate?.invoiceDate || ''))) errors.push('invoiceDate must be YYYY-MM-DD');
@@ -83,19 +86,36 @@ function duplicateFingerprint(invoice) {
 
 function threeWayMatch({ invoice, purchaseOrder, receipt, amountTolerance = 0.01, quantityTolerance = 0 }) {
   const exceptions = [];
-  if (!purchaseOrder) exceptions.push({ code: 'PO_MISSING', field: 'purchaseOrder' });
-  if (!receipt) exceptions.push({ code: 'RECEIPT_MISSING', field: 'receipt' });
-  if (purchaseOrder && String(invoice.vendorId) !== String(purchaseOrder.vendorId)) exceptions.push({ code: 'VENDOR_MISMATCH', field: 'vendorId' });
-  const invoiceLines = invoice.lines || [];
-  const poLines = purchaseOrder?.lines || [];
-  const receiptLines = receipt?.lines || [];
-  for (const line of invoiceLines) {
-    const po = poLines.find((candidate) => String(candidate.lineId) === String(line.poLineId));
-    const received = receiptLines.find((candidate) => String(candidate.poLineId) === String(line.poLineId));
-    if (!po) { exceptions.push({ code: 'PO_LINE_MISSING', line: line.poLineId }); continue; }
-    if (!received) { exceptions.push({ code: 'RECEIPT_LINE_MISSING', line: line.poLineId }); continue; }
-    if (Number(line.quantity) - Number(received.quantity) > quantityTolerance) exceptions.push({ code: 'QUANTITY_OVER_RECEIPT', line: line.poLineId });
-    if (Math.abs(Number(line.unitPrice) - Number(po.unitPrice)) > amountTolerance) exceptions.push({ code: 'PRICE_OUTSIDE_TOLERANCE', line: line.poLineId });
+  const number = value => ['number','string'].includes(typeof value) && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0;
+  if (!number(amountTolerance) || !number(quantityTolerance)) exceptions.push({code:'INVALID_TOLERANCE'});
+  if (!invoice || !Array.isArray(invoice.lines) || !invoice.lines.length) exceptions.push({code:'INVOICE_LINES_REQUIRED'});
+  if (!purchaseOrder || !Array.isArray(purchaseOrder.lines) || !purchaseOrder.lines.length) exceptions.push({ code: 'PO_MISSING', field: 'purchaseOrder' });
+  if (!receipt || !Array.isArray(receipt.lines) || !receipt.lines.length) exceptions.push({ code: 'RECEIPT_MISSING', field: 'receipt' });
+  if (!invoice?.vendorId || !purchaseOrder?.vendorId || String(invoice.vendorId) !== String(purchaseOrder.vendorId)) exceptions.push({ code: 'VENDOR_MISMATCH', field: 'vendorId' });
+  const poLines = new Map(), received = new Map(), billed = new Map();
+  for (const line of Array.isArray(purchaseOrder?.lines) ? purchaseOrder.lines : []) {
+    const id = String(line?.lineId ?? '').trim();
+    if (!id || poLines.has(id) || !number(line?.unitPrice)) { exceptions.push({code:'INVALID_PO_LINE',line:id}); continue; }
+    poLines.set(id,line);
+  }
+  for (const line of Array.isArray(receipt?.lines) ? receipt.lines : []) {
+    const id = String(line?.poLineId ?? '').trim();
+    if (!id || !number(line?.quantity)) { exceptions.push({code:'INVALID_RECEIPT_LINE',line:id}); continue; }
+    received.set(id,(received.get(id) || 0) + Number(line.quantity));
+  }
+  for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
+    const id = String(line?.poLineId ?? '').trim();
+    if (!id || !number(line?.quantity) || !number(line?.unitPrice)) { exceptions.push({code:'INVALID_INVOICE_LINE',line:id}); continue; }
+    billed.set(id,(billed.get(id) || 0) + Number(line.quantity));
+    const po = poLines.get(id);
+    if (!po) { exceptions.push({code:'PO_LINE_MISSING',line:id}); continue; }
+    if (Math.abs(Number(line.unitPrice)-Number(po.unitPrice)) > Number(amountTolerance)) exceptions.push({code:'PRICE_OUTSIDE_TOLERANCE',line:id});
+  }
+  for (const [id,quantity] of billed) {
+    if (!received.has(id)) exceptions.push({code:'RECEIPT_LINE_MISSING',line:id});
+    else if (!Number.isFinite(quantity) || !Number.isFinite(received.get(id)) || quantity-received.get(id) > Number(quantityTolerance)) exceptions.push({code:'QUANTITY_OVER_RECEIPT',line:id});
+    const ordered = poLines.get(id)?.quantity;
+    if (ordered !== undefined && (!number(ordered) || quantity-Number(ordered) > Number(quantityTolerance))) exceptions.push({code:'QUANTITY_OVER_PO',line:id});
   }
   return { matched: exceptions.length === 0, exceptions, evidenceDigest: digest({ invoice, purchaseOrder, receipt, amountTolerance, quantityTolerance }) };
 }
@@ -114,8 +134,9 @@ function authorizeTransition({ current, next, actor, submitterId, amount, approv
   }
   if (next === 'approved') {
     if (!['approver', 'admin'].includes(role)) errors.push('approver role is required');
-    if (Number(actor?.id) === Number(submitterId)) errors.push('submitter cannot approve their invoice');
-    const distinct = new Set(approvals.filter((item) => item.decision === 'approve' && Number(item.actorId) !== Number(submitterId)).map((item) => item.actorId));
+    if (!actor?.id || !submitterId || String(actor.id) === String(submitterId)) errors.push('submitter cannot approve their invoice');
+    if (!['number','string'].includes(typeof amount) || String(amount).trim() === '' || !Number.isFinite(Number(amount)) || Number(amount) < 0) errors.push('valid invoice amount required');
+    const distinct = new Set(approvals.filter((item) => item.decision === 'approve' && item.actorId != null && String(item.actorId).trim() && String(item.actorId) !== String(submitterId)).map((item) => String(item.actorId)));
     if (distinct.size < requiredApprovalCount(amount)) errors.push('required distinct approvals are missing');
   }
   if (next === 'posting_pending' && !['ap_analyst', 'admin'].includes(role)) errors.push('AP analyst role is required to request posting');
