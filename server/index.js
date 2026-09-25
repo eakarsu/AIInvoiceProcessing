@@ -277,6 +277,8 @@ function createCRUD(tableName, aiAnalyzer) {
 }
 
 // ====== REGISTER ALL ROUTES ======
+app.use('/api/ap-decisions', require('./routes/apDecisions')(authMiddleware, pool));
+app.use('/api/invoices', require('./routes/invoiceExtract')(authMiddleware, pool));
 app.use('/api/invoices', createCRUD('invoices', aiFeatures.analyzeInvoice));
 app.use('/api/vendors', createCRUD('vendors', aiFeatures.analyzeVendor));
 app.use('/api/purchase-orders', createCRUD('purchase_orders', aiFeatures.analyzePurchaseOrder));
