@@ -301,17 +301,20 @@ async function renderApprovalBottleneck(content) {
       <div class="dashboard-stats">
         <div class="stat-card"><div class="stat-value">${data.summary.blockedInvoices}</div><div class="stat-label">Blocked Invoices</div></div>
         <div class="stat-card"><div class="stat-value">$${Number(data.summary.cashAtRisk).toLocaleString()}</div><div class="stat-label">Cash at Risk</div></div>
-        <div class="stat-card"><div class="stat-value">${data.summary.medianDelayDays}</div><div class="stat-label">Median Delay Days</div></div>
+        <div class="stat-card"><div class="stat-value">${data.summary.medianDelayDays == null ? '—' : data.summary.medianDelayDays}</div><div class="stat-label">Median Delay Days</div></div>
         <div class="stat-card"><div class="stat-value">${data.summary.urgentApprovers}</div><div class="stat-label">Urgent Approvers</div></div>
       </div>
       <div class="table-container">
         <table class="data-table">
           <thead><tr><th>Owner</th><th>Invoices</th><th>Amount</th><th>Delay Days</th></tr></thead>
-          <tbody>${data.queues.map(q => `<tr><td>${escapeHtml(q.owner)}</td><td>${q.invoices}</td><td>$${Number(q.amount).toLocaleString()}</td><td>${q.delayDays}</td></tr>`).join('')}</tbody>
+          <tbody>${data.queues.length
+            ? data.queues.map(q => `<tr><td>${escapeHtml(q.owner)}</td><td>${q.invoices}</td><td>$${Number(q.amount).toLocaleString()}</td><td>${q.delayDays}</td></tr>`).join('')
+            : '<tr><td colspan="4" style="text-align:center;padding:24px;color:#64748b;">No approvals are pending.</td></tr>'}</tbody>
         </table>
       </div>
       <div class="ai-content" style="margin-top:16px;">
         ${data.recommendations.map(item => `<div class="ai-section"><div class="ai-section-content">${escapeHtml(item)}</div></div>`).join('')}
+        ${data.basis ? `<div class="ai-section"><div class="ai-section-content" style="color:#64748b;font-size:13px;">${escapeHtml(data.basis)}</div></div>` : ''}
       </div>`;
     document.getElementById('refresh-approval-bottleneck').addEventListener('click', () => renderApprovalBottleneck(content));
   } catch (err) {
@@ -359,10 +362,10 @@ function renderOcrSection(container, config) {
 
     try {
       const data = await apiUpload('/invoices/ocr-upload', formData);
-      const ex = data.extracted || {};
+      const ex = data.extracted_candidate || {};
       resultDiv.innerHTML = `
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:16px;">
-          <h4 style="margin:0 0 12px;">Extracted Data ${data.invoice_id ? '<span style="color:#22c55e;font-size:13px;">(Invoice #' + data.invoice_id + ' saved)</span>' : ''}</h4>
+          <h4 style="margin:0 0 12px;">Extracted Candidate</h4>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
             <div><strong>Vendor:</strong> ${escapeHtml(ex.vendor_name || '-')}</div>
             <div><strong>Invoice #:</strong> ${escapeHtml(ex.invoice_number || '-')}</div>
@@ -380,9 +383,8 @@ function renderOcrSection(container, config) {
                 <tbody>${ex.line_items.map(li => `<tr><td style="padding:4px 8px;">${escapeHtml(String(li.description || '-'))}</td><td style="padding:4px 8px;">${li.quantity || '-'}</td><td style="padding:4px 8px;">$${Number(li.unit_price || 0).toFixed(2)}</td><td style="padding:4px 8px;">$${Number(li.total || 0).toFixed(2)}</td></tr>`).join('')}</tbody>
               </table>
             </div>` : ''}
-          ${data.invoice_id ? `<p style="margin:12px 0 0;color:#22c55e;font-size:14px;">Invoice automatically saved with ID #${data.invoice_id}. Refreshing list...</p>` : '<p style="margin:12px 0 0;color:#f59e0b;font-size:14px;">Invoice could not be auto-saved (missing vendor name).</p>'}
+          <p style="margin:12px 0 0;color:#b45309;font-size:14px;">Not saved. This is a non-authoritative candidate — submit it to the governed extraction endpoint for deterministic validation before it becomes an invoice.</p>
         </div>`;
-      if (data.invoice_id) setTimeout(() => renderPage(currentPage), 1500);
     } catch (err) {
       resultDiv.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;
     }
@@ -869,6 +871,7 @@ function showDetail(item, config, pageName) {
             ${match.recommended_action ? `<div style="margin-bottom:8px;font-size:14px;"><strong>Action:</strong> ${escapeHtml(match.recommended_action)}</div>` : ''}
             ${match.approval_confidence !== undefined ? `<div style="font-size:13px;color:#64748b;">Confidence: ${Math.round(match.approval_confidence * 100)}%</div>` : ''}
             ${match.summary ? `<div style="margin-top:8px;font-size:13px;color:#475569;">${escapeHtml(match.summary)}</div>` : ''}
+            <div style="margin-top:10px;font-size:12px;color:#b45309;">Advisory only — this analysis does not change the invoice status. Approvals and status transitions are recorded in the governed invoice workflow.</div>
           </div>`;
       } catch (err) {
         resultDiv.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;

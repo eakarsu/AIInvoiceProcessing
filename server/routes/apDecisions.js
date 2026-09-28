@@ -35,48 +35,6 @@ function createApDecisionsRouter(authMiddleware, pool) {
     { category: 'payroll',     terms: ['salary', 'wages', 'payroll', 'benefits', 'pension', 'superannuation'] },
   ];
 
-  router.post('/classify-expense', authMiddleware, async (req, res) => {
-    try {
-      const { vendor, description, amount } = req.body || {};
-      const text = `${vendor ?? ''} ${description ?? ''}`.toLowerCase().trim();
-      if (!text) {
-        return res.status(400).json({ error: 'vendor or description is required' });
-      }
-
-      const matches = [];
-      for (const rule of RULES) {
-        const hit = rule.terms.filter((t) => text.includes(t));
-        if (hit.length) matches.push({ category: rule.category, matchedTerms: hit });
-      }
-
-      // Confidence reflects how much signal matched, and how much text there was.
-      const wordCount = text.split(/\s+/).filter(Boolean).length;
-      const top = matches[0] ?? null;
-      const confidence =
-        !top ? 'insufficient-history'
-          : top.matchedTerms.length >= 2 && wordCount >= 3 ? 'high'
-            : 'medium';
-
-      res.json({
-        suggestedCategory: top?.category ?? null,
-        matchedTerms: top?.matchedTerms ?? [],
-        alternatives: matches.slice(1, 4),
-        confidence,
-        explanation: top
-          ? `Matched rule "${top.category}" on terms: ${top.matchedTerms.join(', ')}.`
-          : 'No rule matched the supplied text; route to manual coding.',
-        assumptions: [
-          'Rules are ordered and the first match wins; alternatives are listed for review.',
-          'Classification uses only the vendor and description text supplied.',
-          'Amount is accepted for context but does not influence the category.',
-        ],
-      });
-    } catch (err) {
-      console.error('classify-expense error:', err);
-      res.status(500).json({ error: err.message || 'Classification failed' });
-    }
-  });
-
   /* ---------------------- cash-flow forecast ---------------------- */
 
   /**
@@ -97,20 +55,20 @@ function createApDecisionsRouter(authMiddleware, pool) {
       const [opening, payable, receivable, scheduled] = await Promise.all([
         pool.query(`SELECT COALESCE(SUM(amount),0)::float AS v FROM payments WHERE payment_date < $1`, [asOf]),
         pool.query(
-          `SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0)::float AS v
+          `SELECT COALESCE(SUM(amount),0)::float AS v
              FROM invoices
             WHERE due_date >= $1 AND due_date <= $2 AND status NOT IN ('paid','void','cancelled')`,
           [asOf, horizon],
         ),
         pool.query(
-          `SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0)::float AS v
+          `SELECT COALESCE(SUM(amount),0)::float AS v
              FROM invoices
-            WHERE due_date <= $2 AND status NOT IN ('paid','void','cancelled')`,
+            WHERE due_date <= $1 AND status NOT IN ('paid','void','cancelled')`,
           [horizon],
         ),
         pool.query(
-          `SELECT date_trunc('day', due_date)::date AS day,
-                  SUM(total_amount - COALESCE(paid_amount,0))::float AS amount
+          `SELECT to_char(date_trunc('day', due_date), 'YYYY-MM-DD') AS day,
+                  SUM(amount)::float AS amount
              FROM invoices
             WHERE due_date >= $1 AND due_date <= $2 AND status NOT IN ('paid','void','cancelled')
             GROUP BY 1 ORDER BY 1`,
@@ -140,6 +98,7 @@ function createApDecisionsRouter(authMiddleware, pool) {
           'Projection sums dated invoice obligations inside the horizon; no trend extrapolation.',
           'Opening cash is the sum of recorded payments before asOf, used as a cash proxy.',
           'Invoices already paid, void or cancelled are excluded.',
+          'Outstanding amounts use the invoice amount; the legacy invoices table has no paid_amount column, so partial payments are not netted off.',
           'No receipts, payroll or tax timing is modelled — this is an invoice-schedule projection.',
         ],
       });

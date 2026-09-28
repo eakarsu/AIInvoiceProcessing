@@ -158,8 +158,27 @@ function createCRUD(tableName, aiAnalyzer) {
     next();
   };
 
+  // Read gate.
+  //
+  // Limitation: these legacy tables (invoices, vendors, payments, budgets, ...)
+  // have no tenant_id/company column, so per-tenant row scoping cannot be
+  // expressed against this schema. `tenant_id` exists only on users and
+  // tenant_memberships, added by the governed-workflow migration. The safest
+  // gate the schema supports is role-based: only finance/audit roles may read
+  // financial records here, instead of every authenticated user. Restoring
+  // true tenant scoping requires a schema change that the governed workflow
+  // owns. Writes stay further restricted by writeGuard below.
+  const readRoles = new Set(['admin', 'manager', 'ap_analyst', 'auditor']);
+  const readGuard = (req, res, next) => {
+    const role = String(req.user?.role || '').toLowerCase();
+    if (!readRoles.has(role)) {
+      return res.status(403).json({ error: 'A finance role (admin, manager, AP analyst or auditor) is required to read financial records' });
+    }
+    next();
+  };
+
   // GET all - with pagination
-  router.get('/', async (req, res) => {
+  router.get('/', readGuard, async (req, res) => {
     try {
       const page = Math.max(1, parseInt(req.query.page) || 1);
       const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
@@ -188,7 +207,7 @@ function createCRUD(tableName, aiAnalyzer) {
   });
 
   // GET by id
-  router.get('/:id', async (req, res) => {
+  router.get('/:id', readGuard, async (req, res) => {
     try {
       const result = await pool.query(`SELECT * FROM ${tableName} WHERE id = $1`, [req.params.id]);
       if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
@@ -249,7 +268,7 @@ function createCRUD(tableName, aiAnalyzer) {
 
   // AI Analysis - with rate limiter and structured output
   if (aiAnalyzer) {
-    router.post('/:id/analyze', authMiddleware, aiRateLimiter, async (req, res) => {
+    router.post('/:id/analyze', readGuard, aiRateLimiter, async (req, res) => {
       try {
         const result = await pool.query(`SELECT * FROM ${tableName} WHERE id = $1`, [req.params.id]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
@@ -397,20 +416,22 @@ Return JSON only:
       }
     }
 
-    // Update invoice status if approved
-    if (matchData && matchData.match_status === 'approved') {
-      await pool.query(
-        `UPDATE invoices SET status = 'matched', ai_extracted_data = $1 WHERE id = $2`,
-        [JSON.stringify({ ...invoice.ai_extracted_data, three_way_match: matchData }), id]
-      );
-    }
-
+    // Advisory only. Unverified model output must never advance an invoice to
+    // "matched": governed status transitions belong to the governed workflow
+    // (invoice_cases / invoice_approvals), where a match is recorded from
+    // deterministic line/tax/total checks plus a governed approval. This legacy
+    // endpoint reports the analysis and persists nothing.
     res.json({
       invoice_id: id,
       po_found: !!po,
       receipt_found: !!receipt,
       match_result: matchData,
-      raw_ai: aiResult.content
+      raw_ai: aiResult.content,
+      advisory: true,
+      authoritative: false,
+      persisted: false,
+      status_changed: false,
+      note: 'Advisory analysis only. The invoice status is not changed here; approvals and status transitions belong to the governed invoice workflow.'
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -418,7 +439,7 @@ Return JSON only:
 });
 
 // Dashboard stats
-app.get('/api/dashboard', async (req, res) => {
+app.get('/api/dashboard', authMiddleware, async (req, res) => {
   try {
     const [invoices, vendors, payments, pos, approvals, budgets] = await Promise.all([
       pool.query('SELECT COUNT(*) as count, COALESCE(SUM(amount),0) as total, status FROM invoices GROUP BY status'),
@@ -699,6 +720,7 @@ Return JSON:
 
 // Governed AP workflow is mounted before the frontend catch-all.
 app.use('/api/governed-invoices', require('./routes/governedInvoiceWorkflow')(authMiddleware));
+app.use('/api/approval-bottleneck', require('./routes/approval-bottleneck')(authMiddleware, pool));
 
 // Catch-all: serve frontend
 app.get('*', (req, res) => {

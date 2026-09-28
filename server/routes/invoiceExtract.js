@@ -122,7 +122,7 @@ function extractFields(text) {
 function createInvoiceExtractRouter(authMiddleware, pool) {
 
 /** Run extraction over supplied document text. */
-  router.post('/extract', authenticateToken, async (req, res) => {
+  router.post('/extract', authMiddleware, async (req, res) => {
   try {
     const provider = ocrProvider();
     const { text, imageBase64 } = req.body || {};
@@ -161,7 +161,7 @@ function createInvoiceExtractRouter(authMiddleware, pool) {
 });
 
 /** Extract and persist onto an invoice row, advancing it to "extracted". */
-  router.post('/extract/:id', authenticateToken, async (req, res) => {
+  router.post('/extract/:id', authMiddleware, async (req, res) => {
   try {
     const { text } = req.body || {};
     if (!String(text ?? '').trim()) return res.status(400).json({ error: 'text is required' });
@@ -179,7 +179,7 @@ function createInvoiceExtractRouter(authMiddleware, pool) {
       }
     };
     set('invoice_number', 'invoiceNumber');
-    set('invoice_date', 'invoiceDate');
+    set('issue_date', 'invoiceDate'); // schema column is issue_date; there is no invoice_date column
     set('amount', 'amount');
 
     if (Object.keys(changes).length === 0) {
@@ -188,8 +188,10 @@ function createInvoiceExtractRouter(authMiddleware, pool) {
 
     const cols = Object.keys(changes);
     const assigns = cols.map((c, i) => c + ' = $' + (i + 1)).join(', ');
+    // No `revision` column: this legacy `invoices` table has no revision
+    // counter (`invoice_cases.revision` belongs to the governed workflow).
     await pool.query(
-      'UPDATE invoices SET ' + assigns + " , status = CASE WHEN status = 'ingested' THEN 'extracted' ELSE status END, revision = revision + 1, updated_at = NOW() WHERE id = $" + (cols.length + 1),
+      'UPDATE invoices SET ' + assigns + " , status = CASE WHEN status = 'ingested' THEN 'extracted' ELSE status END, updated_at = NOW() WHERE id = $" + (cols.length + 1),
       [...cols.map((c) => changes[c].to), req.params.id]
     );
 
