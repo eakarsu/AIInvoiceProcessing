@@ -191,14 +191,30 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   }
 });
 
-document.getElementById('demo-login-btn').addEventListener('click', () => {
-  const credentials = window.DEMO_CREDENTIALS;
+document.getElementById('demo-login-btn').addEventListener('click', async () => {
+  let credentials = window.DEMO_CREDENTIALS;
   if (!credentials) {
-    toast('Demo credentials are unavailable.', 'error');
+    try {
+      const response = await fetch(`/runtime-config.js?refresh=${Date.now()}`, { cache: 'no-store' });
+      if (response.ok) {
+        const source = (await response.text()).trim();
+        const prefix = 'window.DEMO_CREDENTIALS=';
+        if (source.startsWith(prefix) && source.endsWith(';')) {
+          credentials = JSON.parse(source.slice(prefix.length, -1));
+          window.DEMO_CREDENTIALS = credentials;
+        }
+      }
+    } catch (_) {
+      // The message below also covers a frontend opened without its local server.
+    }
+  }
+  if (!credentials) {
+    toast('Demo credentials are unavailable. Open the local frontend URL and refresh.', 'error');
     return;
   }
   document.getElementById('login-email').value = credentials.email;
   document.getElementById('login-password').value = credentials.password;
+  document.getElementById('login-form').requestSubmit();
 });
 
 document.getElementById('logout-btn').addEventListener('click', () => {
@@ -236,6 +252,7 @@ function navigateTo(page) {
 async function renderPage(page, pageNum = 1) {
   const content = document.getElementById('page-content');
   if (page === 'dashboard') return renderDashboard(content);
+  if (page === 'governed-ap') return renderGovernedAP(content);
   if (page === 'advanced-ai') return renderAdvancedAI(content);
   if (page === 'approval-bottleneck') return renderApprovalBottleneck(content);
 

@@ -30,7 +30,7 @@ function ocrProvider() {
 const AMOUNT = /(?:USD|EUR|GBP|\$|€|£)?\s*(-?\d{1,3}(?:,\d{3})*(?:\.\d{2})|-\d+(?:\.\d{2})?)/;
 const INVOICE_NO = /\b(?:invoice|inv|bill)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/]{2,29})\b/i;
 const DATE = /\b(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}-\d{1,2}-\d{2,4})\b/;
-const VENDOR_LINE = /^\s*(?:from|vendor|supplier|bill\s*to)\s*[:\-]\s*(.+)$/im;
+const VENDOR_LINE = /(?:^|[\n\f])[ \t]*(?:from|vendor|supplier|bill[ \t]+to)[ \t]*[:\-][ \t]*(.+)$/im;
 
 function field(value, confidence, evidence, basis) {
   const ok = value != null && confidence >= CONFIDENCE_FLOOR;
@@ -55,7 +55,24 @@ function normaliseDate(raw) {
 
 function extractFields(text) {
   const src = String(text ?? '');
-  const lines = src.split(/\r?\n/);
+  const lines = src.split(/[\r\n\f]+/);
+  const locate = (evidence, exactIndex) => {
+    if (!evidence) return null;
+    const index = exactIndex === undefined
+      ? src.toLowerCase().indexOf(String(evidence).toLowerCase())
+      : exactIndex;
+    if (index < 0) return null;
+    const before = src.slice(0, index);
+    const pageText = before.slice(before.lastIndexOf('\f') + 1);
+    const lineText = pageText.slice(pageText.lastIndexOf('\n') + 1);
+    return {
+      page: before.split('\f').length,
+      line: pageText.split('\n').length,
+      column: lineText.length + 1,
+      charStart: index,
+      charEnd: index + String(evidence).length,
+    };
+  };
 
   const labelledNo = INVOICE_NO.exec(src);
   const invoiceNumber = labelledNo
@@ -112,8 +129,31 @@ function extractFields(text) {
 
   const entries = [['invoiceNumber', invoiceNumber], ['invoiceDate', invoiceDate], ['amount', amount], ['vendor', vendor]];
 
+  for (const item of [invoiceNumber, invoiceDate, amount, vendor]) {
+    item.sourcePosition = locate(item.evidence);
+  }
+  const lineCandidates = [];
+  let sourceLineIndex = 0;
+  for (const lineMatch of src.matchAll(/[^\r\n\f]+/g)) {
+    sourceLineIndex += 1;
+    const rawLine = lineMatch[0];
+    const matched = /^[ \t]*(.+?)[ \t]{2,}(\d+(?:\.\d+)?)[ \t]+(\d+(?:\.\d{2})?)[ \t]+(\d+(?:\.\d{2})?)[ \t]*$/.exec(rawLine);
+    if (!matched) continue;
+    const quantity = Number(matched[2]), unitPrice = Number(matched[3]), net = Number(matched[4]);
+    const arithmeticMatches = Math.abs(Math.round(quantity * unitPrice * 100) / 100 - net) <= 0.01;
+    lineCandidates.push({
+      description: matched[1].trim(), quantity, unitPrice, net,
+      confidence: arithmeticMatches ? 0.8 : 0.4,
+      reviewRequired: !arithmeticMatches,
+      evidence: rawLine.trim(),
+      sourcePosition: locate(rawLine.trim(), lineMatch.index + rawLine.indexOf(rawLine.trim())),
+      sourceLineIndex,
+    });
+  }
   return {
     invoiceNumber, invoiceDate, amount, vendor,
+    lineCandidates,
+    lineReviewRequired: lineCandidates.length === 0 || lineCandidates.some(line => line.reviewRequired),
     extractedFieldCount: entries.filter(([, f]) => f.value != null).length,
     needsManualEntry: entries.filter(([, f]) => f.value == null).map(([k]) => k),
   };

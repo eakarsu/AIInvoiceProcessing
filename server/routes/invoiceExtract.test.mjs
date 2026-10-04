@@ -51,3 +51,22 @@ test('confidence reflects ambiguity: labelled beats unlabelled', () => {
   const bare = extractFields('X\n10.00');
   assert.ok(labelled.amount.confidence > bare.amount.confidence);
 });
+
+test('field evidence includes page, line and character coordinates for supplied text', () => {
+  const result = extractFields('Cover page\fVendor: Acme\nInvoice Number: INV-4471');
+  assert.deepEqual(result.vendor.sourcePosition, {
+    page: 2, line: 1, column: 1, charStart: 11, charEnd: 23,
+  });
+  assert.equal(result.invoiceNumber.sourcePosition.page, 2);
+  assert.equal(result.invoiceNumber.sourcePosition.line, 2);
+});
+
+test('line candidates carry page coordinates and flag arithmetic mismatch for AP review', () => {
+  const result = extractFields('Invoice Number: INV-123\fService A  2  50.00  100.00\nService B  3  50.00  140.00');
+  assert.equal(result.lineCandidates.length, 2);
+  assert.equal(result.lineCandidates[0].sourcePosition.page, 2);
+  assert.equal(result.lineCandidates[0].confidence, 0.8);
+  assert.equal(result.lineCandidates[1].reviewRequired, true);
+  assert.equal(result.lineCandidates[1].confidence, 0.4);
+  assert.equal(result.lineReviewRequired, true);
+});

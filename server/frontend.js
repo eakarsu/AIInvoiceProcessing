@@ -13,16 +13,25 @@ app.get('/runtime-config.js', (_request, response) => {
     && process.env.ENABLE_DEMO_CREDENTIAL_AUTOFILL !== 'false'
     && process.env.DEMO_EMAIL && process.env.DEMO_PASSWORD;
   const credentials = enabled ? { email: process.env.DEMO_EMAIL, password: process.env.DEMO_PASSWORD } : null;
+  response.set('Cache-Control', 'no-store');
   response.type('application/javascript').send(`window.DEMO_CREDENTIALS=${JSON.stringify(credentials)};`);
 });
 
 app.use('/api', (request, response) => {
+  const headers = { ...request.headers, host: `127.0.0.1:${backendPort}` };
+  try {
+    if (request.headers.origin && new URL(request.headers.origin).host === request.headers.host) {
+      delete headers.origin;
+    }
+  } catch (_) {
+    // Keep malformed or cross-origin requests subject to backend CORS rules.
+  }
   const proxy = http.request({
     hostname: '127.0.0.1',
     port: backendPort,
     path: request.originalUrl,
     method: request.method,
-    headers: { ...request.headers, host: `127.0.0.1:${backendPort}` },
+    headers,
   }, (backendResponse) => {
     response.writeHead(backendResponse.statusCode || 502, backendResponse.headers);
     backendResponse.pipe(response);
