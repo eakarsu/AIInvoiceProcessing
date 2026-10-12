@@ -315,7 +315,7 @@ app.use('/api/duplicate-detections', createCRUD('duplicate_detections', aiFeatur
 app.use('/api/audit-logs', createCRUD('audit_logs', aiFeatures.analyzeAuditLog));
 
 // ====== OCR UPLOAD ======
-app.post('/api/invoices/ocr-upload', authMiddleware, upload.single('file'), async (req, res) => {
+app.post('/api/invoices/ocr-upload', authMiddleware, aiRateLimiter, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -406,6 +406,7 @@ Return JSON only:
 }`;
 
     const aiResult = await callOpenRouter(prompt);
+    if (!aiResult.success) return res.status(aiResult.statusCode || 502).json({ error: aiResult.error || 'OpenRouter request failed' });
     let matchData = null;
     if (aiResult.success && aiResult.content) {
       try {

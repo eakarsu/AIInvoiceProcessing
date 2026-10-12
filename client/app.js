@@ -32,8 +32,9 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function apiUpload(path, formData) {
+async function apiUpload(path, formData, nativeOptions = {}) {
   const res = await fetch(`${API}/api${path}`, {
+    ...nativeOptions,
     method: 'POST',
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: formData,
@@ -47,6 +48,10 @@ async function apiUpload(path, formData) {
   if (!res.ok) throw new Error(data.error || 'Upload failed');
   return data;
 }
+
+async function nativeInvoiceRequest(url,options={}){const answer=await(options.body instanceof FormData?apiUpload(url,options.body,options):api(url,{...options,body:options.body?JSON.parse(options.body):undefined}));if(answer.success===false)throw new Error(answer.error||'Native provider request failed');return answer;}
+
+const nativeCatalog = window.NativeWorkflowStudio.mount({element:document.getElementById('native-ai-studio'),config:window.nativeWorkflowConfig,request:nativeInvoiceRequest});nativeCatalog.setAuthenticated(Boolean(token));
 
 // ====== TOAST ======
 function toast(message, type = 'success') {
@@ -86,42 +91,7 @@ function closeAiPanel() {
 
 document.getElementById('ai-panel-close').addEventListener('click', closeAiPanel);
 
-function renderAiResponse(result) {
-  const body = document.getElementById('ai-panel-body');
-  if (!result.success) {
-    body.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(result.error || 'Unknown error')}</div>`;
-    return;
-  }
-
-  // Parse the AI content into sections
-  const content = result.content;
-  const sections = parseAiContent(content);
-
-  let html = '<div class="ai-content">';
-
-  if (sections.length > 0) {
-    sections.forEach(section => {
-      html += `<div class="ai-section">
-        <div class="ai-section-title">${escapeHtml(section.title)}</div>
-        <div class="ai-section-content">${formatAiText(section.content)}</div>
-      </div>`;
-    });
-  } else {
-    html += `<div class="ai-section">
-      <div class="ai-section-content">${formatAiText(content)}</div>
-    </div>`;
-  }
-
-  // Meta info
-  html += `<div class="ai-meta">`;
-  if (result.model) html += `<div class="ai-meta-item">Model: <strong>${escapeHtml(result.model)}</strong></div>`;
-  if (result.usage) {
-    html += `<div class="ai-meta-item">Tokens: ${result.usage.prompt_tokens || 0} in / ${result.usage.completion_tokens || 0} out</div>`;
-  }
-  html += `</div></div>`;
-
-  body.innerHTML = html;
-}
+function renderAiResponse(result){const body=document.getElementById('ai-panel-body');body.innerHTML=result.success===false?'<p role="alert">'+window.BrowserAIReport.escape(result.error||'Provider request failed')+'</p>':window.BrowserAIReport.render(result.structured||result.content||result);}
 
 function parseAiContent(text) {
   const sections = [];
@@ -218,6 +188,7 @@ document.getElementById('demo-login-btn').addEventListener('click', async () => 
 });
 
 document.getElementById('logout-btn').addEventListener('click', () => {
+  nativeCatalog.setAuthenticated(false);
   token = null;
   currentUser = null;
   localStorage.removeItem('token');
@@ -226,7 +197,7 @@ document.getElementById('logout-btn').addEventListener('click', () => {
   document.getElementById('main-app').classList.add('hidden');
 });
 
-function showApp() {
+function showApp() { nativeCatalog.setAuthenticated(true);
   document.getElementById('login-page').classList.add('hidden');
   document.getElementById('main-app').classList.remove('hidden');
   document.getElementById('user-name').textContent = currentUser.name;
@@ -358,55 +329,7 @@ function renderPagination(pagination, page) {
   }
 }
 
-function renderOcrSection(container, config) {
-  container.innerHTML = `
-    <h3 style="margin:0 0 12px;font-size:16px;">Upload Invoice for AI Extraction (OCR)</h3>
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-      <input type="file" id="ocr-file-input" accept="image/jpeg,image/png" style="flex:1;min-width:200px;">
-      <button class="btn btn-ai" id="ocr-extract-btn">Extract with AI</button>
-    </div>
-    <div id="ocr-result" style="margin-top:16px;"></div>
-  `;
-
-  document.getElementById('ocr-extract-btn').addEventListener('click', async () => {
-    const fileInput = document.getElementById('ocr-file-input');
-    if (!fileInput.files.length) { toast('Please select a file first', 'error'); return; }
-    const resultDiv = document.getElementById('ocr-result');
-    resultDiv.innerHTML = '<div class="ai-loading">Extracting invoice data with AI...</div>';
-
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-
-    try {
-      const data = await apiUpload('/invoices/ocr-upload', formData);
-      const ex = data.extracted_candidate || {};
-      resultDiv.innerHTML = `
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:16px;">
-          <h4 style="margin:0 0 12px;">Extracted Candidate</h4>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-            <div><strong>Vendor:</strong> ${escapeHtml(ex.vendor_name || '-')}</div>
-            <div><strong>Invoice #:</strong> ${escapeHtml(ex.invoice_number || '-')}</div>
-            <div><strong>Invoice Date:</strong> ${escapeHtml(ex.invoice_date || '-')}</div>
-            <div><strong>Due Date:</strong> ${escapeHtml(ex.due_date || '-')}</div>
-            <div><strong>Subtotal:</strong> $${Number(ex.subtotal || 0).toFixed(2)}</div>
-            <div><strong>Tax:</strong> $${Number(ex.tax || 0).toFixed(2)}</div>
-            <div><strong>Total:</strong> <strong style="color:#2563eb;">$${Number(ex.total_amount || 0).toFixed(2)}</strong></div>
-            <div><strong>Payment Terms:</strong> ${escapeHtml(ex.payment_terms || '-')}</div>
-          </div>
-          ${ex.line_items && ex.line_items.length ? `
-            <div><strong>Line Items:</strong>
-              <table style="width:100%;margin-top:8px;font-size:13px;border-collapse:collapse;">
-                <thead><tr style="background:#f1f5f9;">${['Description','Qty','Unit Price','Total'].map(h => `<th style="padding:6px 8px;text-align:left;">${h}</th>`).join('')}</tr></thead>
-                <tbody>${ex.line_items.map(li => `<tr><td style="padding:4px 8px;">${escapeHtml(String(li.description || '-'))}</td><td style="padding:4px 8px;">${li.quantity || '-'}</td><td style="padding:4px 8px;">$${Number(li.unit_price || 0).toFixed(2)}</td><td style="padding:4px 8px;">$${Number(li.total || 0).toFixed(2)}</td></tr>`).join('')}</tbody>
-              </table>
-            </div>` : ''}
-          <p style="margin:12px 0 0;color:#b45309;font-size:14px;">Not saved. This is a non-authoritative candidate — submit it to the governed extraction endpoint for deterministic validation before it becomes an invoice.</p>
-        </div>`;
-    } catch (err) {
-      resultDiv.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;
-    }
-  });
-}
+function renderOcrSection(container){container.innerHTML='<h3>Invoice image extraction</h3><p>Use an actual source image in the AI workspace. The provider response is an unverified candidate and does not save an invoice.</p><button type="button" data-native-ocr>Open extraction workspace</button>';container.querySelector('[data-native-ocr]').addEventListener('click',()=>{nativeCatalog.selectFeature('invoice-ocr');document.getElementById('native-ai-studio').scrollIntoView({behavior:'smooth',block:'start'});});}
 
 // ====== PAGE CONFIGS ======
 const pageConfigs = {
@@ -790,13 +713,7 @@ function renderTable(data, config, pageName) {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const id = btn.dataset.id;
-      openAiPanel();
-      try {
-        const result = await api(`/${currentPage}/${id}/analyze`, { method: 'POST' });
-        renderAiResponse(result);
-      } catch (err) {
-        renderAiResponse({ success: false, error: err.message });
-      }
+    nativeCatalog.selectFeature('record-analysis-'+currentPage,{id:String(id)});document.getElementById('native-ai-studio').scrollIntoView({behavior:'smooth',block:'start'});
     });
   });
 }
@@ -848,7 +765,7 @@ function showDetail(item, config, pageName) {
     <button class="btn btn-ai" id="detail-ai-btn">AI Analyze</button>
     <button class="btn btn-warning" id="detail-edit-btn">Edit</button>
     <button class="btn btn-danger" id="detail-delete-btn">Delete</button>
-    <button class="btn btn-secondary" id="detail-close-btn">Close</button>
+    <button class="btn btn-secondary" id="detail-close-btn">Cancel</button>
   `;
 
   openModal(`${config.singular} Details`, bodyHtml, footerHtml);
@@ -856,44 +773,12 @@ function showDetail(item, config, pageName) {
   document.getElementById('detail-close-btn').addEventListener('click', closeModal);
 
   document.getElementById('detail-ai-btn').addEventListener('click', async () => {
-    openAiPanel();
-    try {
-      const result = await api(`/${currentPage}/${item.id}/analyze`, { method: 'POST' });
-      renderAiResponse(result);
-    } catch (err) {
-      renderAiResponse({ success: false, error: err.message });
-    }
+    closeModal();
+    nativeCatalog.selectFeature('record-analysis-'+currentPage,{id:String(item.id)});document.getElementById('native-ai-studio').scrollIntoView({behavior:'smooth',block:'start'});
   });
 
   if (isInvoice) {
-    document.getElementById('detail-3way-btn').addEventListener('click', async () => {
-      const resultDiv = document.getElementById('three-way-match-result');
-      resultDiv.innerHTML = '<div class="ai-loading">Running 3-way match analysis...</div>';
-      try {
-        const res = await api(`/invoices/${item.id}/three-way-match`, { method: 'POST' });
-        const match = res.match_result || {};
-        const status = match.match_status || 'unknown';
-        const statusColors = { approved: '#22c55e', discrepancy: '#ef4444', missing_docs: '#f59e0b' };
-        const color = statusColors[status] || '#64748b';
-        resultDiv.innerHTML = `
-          <div style="border:1px solid ${color};border-radius:8px;padding:16px;background:#fff;">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
-              <span style="background:${color};color:#fff;padding:4px 12px;border-radius:20px;font-weight:600;font-size:14px;">${status.replace(/_/g,' ').toUpperCase()}</span>
-              <span style="color:#64748b;font-size:13px;">PO: ${res.po_found ? 'Found' : 'Not Found'} | Receipt: ${res.receipt_found ? 'Found' : 'Not Found'}</span>
-            </div>
-            ${match.discrepancies && match.discrepancies.length ? `
-              <div style="margin-bottom:8px;"><strong>Discrepancies:</strong>
-                <ul style="margin:4px 0 0;padding-left:20px;">${match.discrepancies.map(d => `<li style="font-size:13px;">${escapeHtml(String(d))}</li>`).join('')}</ul>
-              </div>` : ''}
-            ${match.recommended_action ? `<div style="margin-bottom:8px;font-size:14px;"><strong>Action:</strong> ${escapeHtml(match.recommended_action)}</div>` : ''}
-            ${match.approval_confidence !== undefined ? `<div style="font-size:13px;color:#64748b;">Confidence: ${Math.round(match.approval_confidence * 100)}%</div>` : ''}
-            ${match.summary ? `<div style="margin-top:8px;font-size:13px;color:#475569;">${escapeHtml(match.summary)}</div>` : ''}
-            <div style="margin-top:10px;font-size:12px;color:#b45309;">Advisory only — this analysis does not change the invoice status. Approvals and status transitions are recorded in the governed invoice workflow.</div>
-          </div>`;
-      } catch (err) {
-        resultDiv.innerHTML = `<div class="ai-error"><strong>Error:</strong> ${escapeHtml(err.message)}</div>`;
-      }
-    });
+    document.getElementById('detail-3way-btn').addEventListener('click', ()=>{closeModal();nativeCatalog.selectFeature('three-way-match',{id:String(item.id)});document.getElementById('native-ai-studio').scrollIntoView({behavior:'smooth',block:'start'});});
   }
 
   document.getElementById('detail-edit-btn').addEventListener('click', () => {
@@ -1073,159 +958,7 @@ async function renderDashboard(content) {
 }
 
 // ====== ADVANCED AI ======
-async function renderAdvancedAI(content) {
-  content.innerHTML = `
-    <div class="page-header">
-      <h1>🤖 Advanced AI Tools</h1>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-      <button class="btn btn-secondary" data-tab="duplicate">Duplicate Detection</button>
-      <button class="btn btn-secondary" data-tab="payment">Payment Term Advisor</button>
-      <button class="btn btn-secondary" data-tab="budget">Budget Forecast</button>
-      <button class="btn btn-secondary" data-tab="scorecard">Supplier Scorecard</button>
-    </div>
-    <div id="advanced-ai-tab" style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;"></div>
-    <div id="advanced-ai-result" style="margin-top:16px;"></div>
-  `;
-  const tabContainer = content.querySelector('#advanced-ai-tab');
-
-  const renderDuplicate = async () => {
-    let invoices = [];
-    try {
-      const res = await api(`/invoices?page=1&limit=200`);
-      invoices = Array.isArray(res) ? res : (res.data || []);
-    } catch {/* ignore */}
-    tabContainer.innerHTML = `
-      <h3 style="margin:0 0 12px;">🔍 Duplicate Invoice Detection</h3>
-      <p style="color:#64748b;margin-bottom:12px;">Detect duplicate / near-duplicate invoices for the selected invoice using vendor + amount tolerance + invoice number.</p>
-      <div class="form-group">
-        <label>Invoice</label>
-        <select id="adv-invoice-id">
-          <option value="">-- Select Invoice --</option>
-          ${invoices.map(inv => `<option value="${inv.id}">#${inv.id} ${inv.invoice_number || ''} ${inv.vendor_name ? '— ' + inv.vendor_name : ''} ${inv.total_amount ? '($' + Number(inv.total_amount).toLocaleString() + ')' : ''}</option>`).join('')}
-        </select>
-      </div>
-      <button class="btn btn-primary" id="adv-duplicate-run">Run Duplicate Detection</button>
-    `;
-    document.getElementById('adv-duplicate-run').addEventListener('click', async () => {
-      const id = document.getElementById('adv-invoice-id').value;
-      if (!id) { toast('Please select an invoice', 'error'); return; }
-      await runAdvanced(`/invoices/${id}/duplicate-detection`, {});
-    });
-  };
-
-  const renderPayment = async () => {
-    let vendors = [];
-    try {
-      const res = await api(`/vendors?page=1&limit=200`);
-      vendors = Array.isArray(res) ? res : (res.data || []);
-    } catch {/* ignore */}
-    tabContainer.innerHTML = `
-      <h3 style="margin:0 0 12px;">💼 Payment Term Advisor</h3>
-      <p style="color:#64748b;margin-bottom:12px;">Recommended terms days, early-pay discount target, expected annual savings, and negotiation script.</p>
-      <div class="form-group">
-        <label>Vendor</label>
-        <select id="adv-vendor-id">
-          <option value="">-- Select Vendor --</option>
-          ${vendors.map(v => `<option value="${v.id}">#${v.id} ${v.name || ''} ${v.payment_terms ? '(' + v.payment_terms + ')' : ''}</option>`).join('')}
-        </select>
-      </div>
-      <button class="btn btn-primary" id="adv-payment-run">Run Advisor</button>
-    `;
-    document.getElementById('adv-payment-run').addEventListener('click', async () => {
-      const id = document.getElementById('adv-vendor-id').value;
-      if (!id) { toast('Please select a vendor', 'error'); return; }
-      await runAdvanced(`/vendors/${id}/payment-term-advisor`, {});
-    });
-  };
-
-  const renderBudget = () => {
-    tabContainer.innerHTML = `
-      <h3 style="margin:0 0 12px;">📊 Budget Forecast</h3>
-      <p style="color:#64748b;margin-bottom:12px;">Low/central/high projections by category with confidence and recommended actions.</p>
-      <div class="form-group">
-        <label>Forecast Horizon (months)</label>
-        <input type="number" id="adv-horizon-months" value="12" min="1" max="36">
-      </div>
-      <div class="form-group">
-        <label>Notes / Context</label>
-        <textarea id="adv-budget-notes" rows="3" placeholder="Optional: business changes, hiring, seasonality"></textarea>
-      </div>
-      <button class="btn btn-primary" id="adv-budget-run">Run Forecast</button>
-    `;
-    document.getElementById('adv-budget-run').addEventListener('click', async () => {
-      const horizon = Number(document.getElementById('adv-horizon-months').value || 12);
-      const notes = document.getElementById('adv-budget-notes').value;
-      const body = { horizon_months: horizon };
-      if (notes) body.notes = notes;
-      await runAdvanced('/budgets/forecast', body);
-    });
-  };
-
-  const renderScorecard = async () => {
-    let vendors = [];
-    try {
-      const res = await api(`/vendors?page=1&limit=200`);
-      vendors = Array.isArray(res) ? res : (res.data || []);
-    } catch {/* ignore */}
-    tabContainer.innerHTML = `
-      <h3 style="margin:0 0 12px;">📋 Supplier Scorecard</h3>
-      <p style="color:#64748b;margin-bottom:12px;">Composite vendor score across delivery, billing, payment compliance, dispute rate, and risk.</p>
-      <div class="form-group">
-        <label>Vendor</label>
-        <select id="adv-scorecard-vendor-id">
-          <option value="">-- Select Vendor --</option>
-          ${vendors.map(v => `<option value="${v.id}">#${v.id} ${v.name || ''}</option>`).join('')}
-        </select>
-      </div>
-      <button class="btn btn-primary" id="adv-scorecard-run">Run Scorecard</button>
-    `;
-    document.getElementById('adv-scorecard-run').addEventListener('click', async () => {
-      const id = document.getElementById('adv-scorecard-vendor-id').value;
-      if (!id) { toast('Please select a vendor', 'error'); return; }
-      await runAdvanced(`/vendors/${id}/scorecard`, {});
-    });
-  };
-
-  const runAdvanced = async (path, body) => {
-    const result = document.getElementById('advanced-ai-result');
-    result.innerHTML = '<div class="empty-state"><p>AI is analyzing...</p></div>';
-    try {
-      const data = await api(path, { method: 'POST', body });
-      result.innerHTML = `
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;">
-          <h3 style="margin:0 0 12px;">Result</h3>
-          <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;overflow:auto;font-size:12px;max-height:520px;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
-        </div>
-      `;
-    } catch (err) {
-      const status = err.status || (err.response && err.response.status);
-      const msg = (status === 503)
-        ? 'AI service unavailable - OPENROUTER_API_KEY is not set on the server.'
-        : (err.message || 'Request failed');
-      result.innerHTML = `<div style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;padding:12px;border-radius:8px;">${escapeHtml(msg)}</div>`;
-    }
-  };
-
-  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-  content.querySelectorAll('[data-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      content.querySelectorAll('[data-tab]').forEach((b) => b.classList.remove('btn-primary'));
-      content.querySelectorAll('[data-tab]').forEach((b) => b.classList.add('btn-secondary'));
-      btn.classList.remove('btn-secondary');
-      btn.classList.add('btn-primary');
-      const tab = btn.dataset.tab;
-      document.getElementById('advanced-ai-result').innerHTML = '';
-      if (tab === 'duplicate') renderDuplicate();
-      else if (tab === 'payment') renderPayment();
-      else if (tab === 'budget') renderBudget();
-      else if (tab === 'scorecard') renderScorecard();
-    });
-  });
-  // Default to first tab
-  content.querySelector('[data-tab="duplicate"]').click();
-}
+function renderAdvancedAI(content){content.innerHTML='<h1>AI workspace</h1><p>The native catalog contains all 21 supported invoice tools, including record reviews, image extraction, and the advisory three-way comparison. Select actual source records and review complete examples before generating.</p><button type="button" data-open-native-ai>Open native AI catalog</button>';content.querySelector('[data-open-native-ai]').addEventListener('click',()=>{nativeCatalog.selectFeature('duplicate-detection');document.getElementById('native-ai-studio').scrollIntoView({behavior:'smooth',block:'start'});});}
 
 // ====== INIT ======
 if (token && currentUser) {

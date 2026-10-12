@@ -34,10 +34,12 @@ function callOpenRouter(prompt, systemPrompt = 'You are an expert AP automation 
       res.on('end', () => {
         try {
           const parsed = JSON.parse(body);
+          if (res.statusCode >= 400) { resolve({ success: false, error: parsed.error?.message || `OpenRouter rejected the request (${res.statusCode})` }); return; }
           if (parsed.error) {
             resolve({ success: false, error: parsed.error.message || 'API error', raw: parsed });
           } else {
-            const content = parsed.choices?.[0]?.message?.content || 'No response';
+            const content = parsed.choices?.[0]?.message?.content;
+            if (typeof content !== 'string' || !content.trim()) { resolve({ success: false, error: 'OpenRouter returned no answer' }); return; }
             resolve({
               success: true,
               content,
@@ -52,6 +54,7 @@ function callOpenRouter(prompt, systemPrompt = 'You are an expert AP automation 
       });
     });
 
+    req.setTimeout(60000, () => req.destroy(new Error('OpenRouter request timed out')));
     req.on('error', (e) => {
       resolve({ success: false, error: e.message });
     });
@@ -63,6 +66,7 @@ function callOpenRouter(prompt, systemPrompt = 'You are an expert AP automation 
 
 function callOpenRouterWithVision(imageDataUrl, systemPrompt) {
   return new Promise((resolve, reject) => {
+    if (!process.env.OPENROUTER_API_KEY) { resolve({ success: false, statusCode: 503, error: 'AI service unavailable: OPENROUTER_API_KEY not set' }); return; }
     const data = JSON.stringify({
       model: process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022',
       messages: [
@@ -97,10 +101,12 @@ function callOpenRouterWithVision(imageDataUrl, systemPrompt) {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(body);
+          if (res.statusCode >= 400) { resolve({ success: false, error: parsed.error?.message || `OpenRouter rejected the request (${res.statusCode})` }); return; }
           if (parsed.error) {
             resolve({ success: false, error: parsed.error.message || 'API error' });
           } else {
-            const content = parsed.choices?.[0]?.message?.content || 'No response';
+            const content = parsed.choices?.[0]?.message?.content;
+            if (typeof content !== 'string' || !content.trim()) { resolve({ success: false, error: 'OpenRouter returned no answer' }); return; }
             resolve({ success: true, content, model: parsed.model, usage: parsed.usage });
           }
         } catch (e) {
@@ -109,6 +115,7 @@ function callOpenRouterWithVision(imageDataUrl, systemPrompt) {
       });
     });
 
+    req.setTimeout(60000, () => req.destroy(new Error('OpenRouter request timed out')));
     req.on('error', (e) => {
       resolve({ success: false, error: e.message });
     });
